@@ -1,0 +1,7 @@
+# This file ensures the artifacts directory is tracked by git
+# The artifacts directory will contain:
+# - Trained models
+# - Log files
+# - Performance reports
+# - Optimization results
+# - Exported data

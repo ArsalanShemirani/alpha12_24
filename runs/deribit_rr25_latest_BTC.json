@@ -1,0 +1,38 @@
+{
+  "currency": "BTC",
+  "rows": [
+    {
+      "currency": "BTC",
+      "expiry_ts": 1755417600000,
+      "inst_call": "BTC-17AUG25-118000-C",
+      "inst_put": "BTC-17AUG25-117000-P",
+      "iv_call25": 0.1387,
+      "iv_put25": 0.1535,
+      "rr25": -0.014800000000000008,
+      "underlying": 117583.45,
+      "updated_at": "2025-08-16T09:53:00.833821+00:00"
+    },
+    {
+      "currency": "BTC",
+      "expiry_ts": 1755504000000,
+      "inst_call": "BTC-18AUG25-119000-C",
+      "inst_put": "BTC-18AUG25-116000-P",
+      "iv_call25": 0.1954,
+      "iv_put25": 0.2186,
+      "rr25": -0.0232,
+      "underlying": 117583.45,
+      "updated_at": "2025-08-16T09:53:12.466914+00:00"
+    },
+    {
+      "currency": "BTC",
+      "expiry_ts": 1755590400000,
+      "inst_call": "BTC-19AUG25-119000-C",
+      "inst_put": "BTC-19AUG25-116000-P",
+      "iv_call25": 0.2303,
+      "iv_put25": 0.2579,
+      "rr25": -0.027600000000000013,
+      "underlying": 117583.45,
+      "updated_at": "2025-08-16T09:53:22.381181+00:00"
+    }
+  ]
+}

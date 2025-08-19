@@ -1,0 +1,28 @@
+[Unit]
+Description=Alpha12 Background Analysis Daemon
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=alpha12
+Group=alpha12
+WorkingDirectory=/home/alpha12/alpha12_24
+Environment=PYTHONPATH=/home/alpha12/alpha12_24
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/alpha12/alpha12_24/.venv/bin/python src/daemon/background_analysis.py
+Restart=always
+RestartSec=5s
+MemoryMax=400M
+StandardOutput=append:/var/log/alpha12/background-analysis.out.log
+StandardError=append:/var/log/alpha12/background-analysis.err.log
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/home/alpha12/alpha12_24/runs /var/log/alpha12
+
+[Install]
+WantedBy=multi-user.target

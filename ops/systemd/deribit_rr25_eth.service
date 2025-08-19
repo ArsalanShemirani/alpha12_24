@@ -1,0 +1,13 @@
+[Unit]
+Description=Alpha12_24 Deribit RR25 Collector (ETH)
+After=network-online.target
+[Service]
+User=ubuntu
+WorkingDirectory=%h/alpha12_24
+Environment=PYTHONPATH=%h/alpha12_24
+Environment=RUNS_DIR=%h/alpha12_24/runs
+ExecStart=%h/alpha12_24/alphaenv/bin/python -m src.data.deribit_rr25 --currency ETH --interval_sec 60
+Restart=always
+RestartSec=10
+[Install]
+WantedBy=default.target

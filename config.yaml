@@ -1,0 +1,27 @@
+eval:
+  horizon_choice_window_days: 60
+  trades_per_month_cap: 60
+fees:
+  taker_bps_per_side: 7.5
+model:
+  calibrate: true
+  embargo_hours: 24
+  learner: xgb
+  test_days: 14
+  train_days: 90
+project:
+  assets:
+  - BTCUSDT
+  bar_interval: 5m
+  horizons_hours:
+  - 12
+  - 24
+risk:
+  risk_per_trade: 0.01
+  stop_min_frac: 0.003
+signal:
+  min_rr: 1.8
+  prob_long: 0.55
+  prob_short: 0.45
+  confidence_threshold: 0.5
+  volatility_threshold: 0.001

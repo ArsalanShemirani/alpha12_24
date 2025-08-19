@@ -1,0 +1,38 @@
+{
+  "currency": "ETH",
+  "rows": [
+    {
+      "currency": "ETH",
+      "expiry_ts": 1755417600000,
+      "inst_call": "ETH-17AUG25-4500-C",
+      "inst_put": "ETH-17AUG25-4375-P",
+      "iv_call25": 0.3997,
+      "iv_put25": 0.4413,
+      "rr25": -0.041600000000000026,
+      "underlying": 4438.0,
+      "updated_at": "2025-08-16T09:54:30.125946+00:00"
+    },
+    {
+      "currency": "ETH",
+      "expiry_ts": 1755504000000,
+      "inst_call": "ETH-18AUG25-4550-C",
+      "inst_put": "ETH-18AUG25-4325-P",
+      "iv_call25": 0.46909999999999996,
+      "iv_put25": 0.5044,
+      "rr25": -0.0353,
+      "underlying": 4438.0,
+      "updated_at": "2025-08-16T09:54:51.865836+00:00"
+    },
+    {
+      "currency": "ETH",
+      "expiry_ts": 1755590400000,
+      "inst_call": "ETH-19AUG25-4600-C",
+      "inst_put": "ETH-19AUG25-4300-P",
+      "iv_call25": 0.5767,
+      "iv_put25": 0.6063000000000001,
+      "rr25": -0.02960000000000007,
+      "underlying": 4438.0,
+      "updated_at": "2025-08-16T09:55:05.196665+00:00"
+    }
+  ]
+}

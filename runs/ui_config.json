@@ -1,0 +1,17 @@
+{
+  "timestamp": "2025-08-19T10:07:43.894499",
+  "source": "ui_dashboard",
+  "settings": {
+    "max_setups_per_day": 2,
+    "gate_regime": true,
+    "gate_rr25": true,
+    "gate_ob": true,
+    "rr25_thresh": 0.0,
+    "ob_edge_delta": 0.2,
+    "ob_signed_thr": 0.6,
+    "min_conf_arm": 0.58,
+    "model_type": "xgb",
+    "calibrate_probs": true,
+    "alerts_enabled": true
+  }
+}
