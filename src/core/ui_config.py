@@ -119,6 +119,9 @@ def get_autosignal_config() -> Dict[str, Any]:
         
         # UI settings with environment fallbacks
         "min_conf_arm": get_ui_setting("min_conf_arm", float(os.getenv("MIN_CONF_ARM", "0.60"))),
+        
+        # Adaptive confidence gate settings
+        "adaptive_confidence_enabled": get_ui_setting("adaptive_confidence_enabled", True),
         "gate_regime": get_ui_setting("gate_regime", bool(int(os.getenv("GATE_REGIME", "1")))),
         "gate_rr25": get_ui_setting("gate_rr25", bool(int(os.getenv("GATE_RR25", "1")))),
         "gate_ob": get_ui_setting("gate_ob", bool(int(os.getenv("GATE_OB", "1")))),
@@ -136,8 +139,9 @@ def get_autosignal_config() -> Dict[str, Any]:
         
         # Account settings
         "acct_balance": get_ui_setting("acct_balance", float(os.getenv("ACCOUNT_BALANCE_USD", "400"))),
-        "max_leverage": get_ui_setting("max_leverage", int(os.getenv("MAX_LEVERAGE", "5"))),
+        "max_leverage": get_ui_setting("max_leverage", int(os.getenv("MAX_LEVERAGE", "10"))),
         "risk_per_trade_pct": get_ui_setting("risk_per_trade_pct", float(os.getenv("RISK_PER_TRADE_PCT", "1.0"))),
+        "nominal_position_pct": get_ui_setting("nominal_position_pct", float(os.getenv("NOMINAL_POSITION_PCT", "25.0"))),
         
         # Telegram settings
         "tg_bot": get_ui_setting("tg_bot", os.getenv("TG_BOT_TOKEN", "")),

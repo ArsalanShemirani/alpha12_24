@@ -1,0 +1,8 @@
+{
+  "BTCUSDT_1h": {
+    "last_recalibration": "2025-08-20T19:06:10.728726",
+    "trigger_reason": "performance_degradation",
+    "model_path": "runs/timeframe_models/BTCUSDT_1h/model.joblib",
+    "meta_path": "runs/timeframe_models/BTCUSDT_1h/meta.json"
+  }
+}

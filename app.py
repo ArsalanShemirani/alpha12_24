@@ -571,7 +571,7 @@ def main():
         st.markdown("---")
         st.caption("Account & Leverage")
         acct_balance = st.number_input("Account balance (USD)", min_value=50.0, max_value=1_000_000.0, value=400.0, step=50.0)
-        max_leverage = st.slider("Max leverage", 1, 5, 5)
+        max_leverage = st.slider("Max leverage", 1, 10, 10)
         st.session_state.update(dict(acct_balance=acct_balance, max_leverage=max_leverage))
 
         # --- Daemon status panel ---
@@ -994,7 +994,7 @@ def run_dashboard_analysis(asset: str, interval: str, days: int, model_type: str
                     # --- Position sizing (risk-based with leverage cap) ---
                     try:
                         balance = float(st.session_state.get("acct_balance", 400.0))
-                        max_lev = int(st.session_state.get("max_leverage", 5))
+                        max_lev = int(st.session_state.get("max_leverage", 10))
                         risk_pct = float(getattr(config, "risk_per_trade", 1.0))
                         risk_frac = max(risk_pct / 100.0, 0.0)
                         entry_px = float(setup_levels["entry"])
@@ -1014,7 +1014,7 @@ def run_dashboard_analysis(asset: str, interval: str, days: int, model_type: str
                     except Exception:
                         size_units = 0.0
                         notional = 0.0
-                        suggested_leverage = float(st.session_state.get("max_leverage", 5))
+                        suggested_leverage = float(st.session_state.get("max_leverage", 10))
                     # --- Hard gates & frequency cap ---
                     # 5.1 Min confidence to arm
                     if float(latest_sig.get("confidence", 0.0)) < float(st.session_state.get("min_conf_arm", 0.60)):
@@ -1188,7 +1188,7 @@ def run_dashboard_analysis(asset: str, interval: str, days: int, model_type: str
                     # (Optional) Show balance & leverage context
                     try:
                         bal = float(st.session_state.get("acct_balance", 400.0))
-                        mlev = int(st.session_state.get("max_leverage", 5))
+                        mlev = int(st.session_state.get("max_leverage", 10))
                         st.caption(f"Sizing context → Balance: ${bal:,.2f}  •  Max Leverage: {mlev}x")
                     except Exception:
                         pass
@@ -1381,7 +1381,7 @@ def display_signals_analysis(signals, config):
             risk_pct = float(getattr(config, "risk_per_trade", 1.0))
             risk_perc = risk_pct / 100.0
             balance = float(st.session_state.get("acct_balance", 400.0))
-            max_lev = int(st.session_state.get("max_leverage", 5))
+            max_lev = int(st.session_state.get("max_leverage", 10))
 
             # Compute stop/target using configured RR
             stop_frac = float(getattr(config, "stop_min_frac", 0.005))
@@ -2299,7 +2299,7 @@ def display_account_tab():
         .replace({"": np.nan})
 
     bal = float(st.session_state.get("acct_balance", 400.0))
-    max_lev = int(st.session_state.get("max_leverage", 5))
+                max_lev = int(st.session_state.get("max_leverage", 10))
     col1, col2, col3 = st.columns(3)
     col1.metric("Configured Balance", f"${bal:,.2f}")
     col2.metric("Max Leverage", f"{max_lev}x")

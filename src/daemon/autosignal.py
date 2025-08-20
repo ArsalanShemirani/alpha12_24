@@ -92,7 +92,7 @@ MAX_SETUPS_PER_DAY = int(os.getenv("MAX_SETUPS_PER_DAY", "2"))  # 0 = unlimited
 
 # Risk/sizing defaults (can be env-overridden)
 ACCOUNT_BALANCE = float(os.getenv("ACCOUNT_BALANCE_USD", "400"))
-MAX_LEVERAGE     = int(os.getenv("MAX_LEVERAGE", "5"))
+MAX_LEVERAGE     = int(os.getenv("MAX_LEVERAGE", "10"))
 RISK_PER_TRADE   = float(os.getenv("RISK_PER_TRADE_PCT", str(getattr(config, "risk_per_trade", 1.0))))  # %
 MIN_RR           = float(os.getenv("MIN_RR", str(getattr(config, "min_rr", 1.8))))
 TAKER_BPS_SIDE   = float(os.getenv("TAKER_BPS_PER_SIDE", str(getattr(config, "taker_bps_per_side", 5))))
@@ -249,7 +249,7 @@ def _append_setup_row(row: dict):
     p = _setups_csv_path()
     os.makedirs(os.path.dirname(p), exist_ok=True)
     write_header = not os.path.exists(p)
-    safe_row = {k: row.get(k, "") for k in SETUP_FIELDS}
+    safe_row = {k: row.get(k, "") if row.get(k) is not None else "" for k in SETUP_FIELDS}
     with open(p, "a", newline="") as f:
         w = csv.DictWriter(f, fieldnames=SETUP_FIELDS, extrasaction="ignore", quoting=csv.QUOTE_MINIMAL)
         if write_header:
@@ -399,6 +399,17 @@ def _train_and_score(asset: str, interval: str, days: int = 120) -> Tuple[Option
     # Try load latest predictor first
     predictor, meta = _load_latest_predictor(asset, interval)
 
+    # NEW: Try to load timeframe-specific model first (if performance monitoring created one)
+    if predictor is None:
+        try:
+            from src.daemon.performance_monitor import performance_monitor
+            timeframe_model = performance_monitor.load_timeframe_model(asset, interval)
+            if timeframe_model is not None:
+                predictor = timeframe_model
+                print(f"[autosignal] Using timeframe-specific model for {asset} {interval}")
+        except Exception as e:
+            print(f"[autosignal] No timeframe-specific model available for {asset} {interval}: {e}")
+
     if predictor is None:
         # Fallback: quick train
         trainer = ModelTrainer(config)
@@ -462,15 +473,19 @@ def _choose_direction(prob_up: float) -> Tuple[str, float]:
 def _build_setup(direction: str, price: float, atr: float, rr: float,
                  k_entry: float, k_stop: float, valid_bars: int,
                  now_ts, bar_interval: str, entry_buffer_bps: float) -> dict:
+    # Apply timeframe-specific stop loss multiplier
+    stop_multiplier = _get_timeframe_stop_multiplier(bar_interval)
+    adjusted_k_stop = k_stop * stop_multiplier
+    
     if direction == "long":
         base_entry = price - k_entry * atr
         entry = base_entry * (1.0 - entry_buffer_bps/10000.0)
-        stop  = entry - k_stop * atr
+        stop  = entry - adjusted_k_stop * atr
         target = entry + rr * (entry - stop)
     else:
         base_entry = price + k_entry * atr
         entry = base_entry * (1.0 + entry_buffer_bps/10000.0)
-        stop  = entry + k_stop * atr
+        stop  = entry + adjusted_k_stop * atr
         target = entry - rr * (stop - entry)
     per_bar_min = {"5m":5, "15m":15, "1h":60, "4h":240, "1d":1440}.get(bar_interval, 60)
     base_now = pd.to_datetime(now_ts, utc=True)
@@ -485,14 +500,16 @@ def _build_setup(direction: str, price: float, atr: float, rr: float,
     }
 
 
-def build_autosetup_levels(direction: str, last_price: float, atr: float, rr: float) -> dict:
+def build_autosetup_levels(direction: str, last_price: float, atr: float, rr: float, interval: str = "1h") -> dict:
     """
     Compute entry/stop/target levels for autosignal setups.
-    Uses K_ENTRY_DEFAULT (default 0.30 ATR) and VALID_BARS_MIN (default 24 bars).
+    Uses timeframe-specific stop loss distances to maintain consistent risk.
     """
     k_entry = K_ENTRY_DEFAULT
-    # keep stop near 1*ATR baseline; scale mildly with rr to avoid ultra-tight stops
-    k_stop = max(1.0, rr / 1.8)
+    
+    # Apply timeframe-specific stop loss multiplier
+    stop_multiplier = _get_timeframe_stop_multiplier(interval)
+    k_stop = max(1.0, rr / 1.8) * stop_multiplier
     
     if direction == "long":
         entry = last_price - k_entry * atr
@@ -507,21 +524,78 @@ def build_autosetup_levels(direction: str, last_price: float, atr: float, rr: fl
     return {"entry": entry, "stop": stop, "target": target, "rr": rr, "valid_bars": VALID_BARS_MIN}
 
 
-def _size_position(entry_px: float, stop_px: float, balance: float, max_lev: int, risk_pct: float) -> Tuple[float, float, float]:
-    """Return (size_units, notional_usd, suggested_leverage)."""
+def _get_timeframe_stop_multiplier(interval: str) -> float:
+    """
+    Get stop loss multiplier based on timeframe.
+    
+    Higher timeframes have wider stops due to increased volatility:
+    - 15m: 0.5x (tighter stops, more frequent trades)
+    - 1h: 1.0x (baseline)
+    - 4h: 1.5x (wider stops, fewer trades)
+    - 1d: 2.0x (widest stops, least frequent trades)
+    """
+    multipliers = {
+        "15m": 0.5,
+        "1h": 1.0,
+        "4h": 1.5,
+        "1d": 2.0
+    }
+    return multipliers.get(interval, 1.0)
+
+def _size_position(entry_px: float, stop_px: float, balance: float, max_lev: int, risk_pct: float, 
+                  interval: str = "1h", nominal_position_pct: float = 25.0) -> Tuple[float, float, float]:
+    """
+    Return (size_units, notional_usd, suggested_leverage).
+    
+    Implements timeframe-specific risk management:
+    - 1% risk per trade (constant across timeframes)
+    - 25% nominal position size (of leveraged account)
+    - Stop loss distance scales with timeframe volatility
+    - Position size adjusts to maintain constant dollar risk
+    """
+    # Calculate nominal account value (balance * max leverage)
+    nominal_balance = balance * max_lev
+    
+    # Calculate target nominal position size (25% of nominal balance)
+    target_nominal_position = nominal_balance * (nominal_position_pct / 100.0)
+    
+    # Calculate risk amount (1% of actual balance)
     risk_frac = max(risk_pct / 100.0, 0.0)
+    risk_amt = balance * risk_frac
+    
+    # Calculate stop distance
     stop_dist = abs(entry_px - stop_px)
     if stop_dist <= 0 or balance <= 0:
         return 0.0, 0.0, 1.0
-    risk_amt = balance * risk_frac
-    size_units = risk_amt / stop_dist
-    notional = size_units * entry_px
+    
+    # Calculate position size based on risk (this ensures 1% risk)
+    risk_based_size_units = risk_amt / stop_dist
+    risk_based_notional = risk_based_size_units * entry_px
+    
+    # Calculate position size based on nominal target (25% of nominal balance)
+    nominal_based_size_units = target_nominal_position / entry_px
+    nominal_based_notional = nominal_based_size_units * entry_px
+    
+    # Use the smaller of the two to ensure we don't exceed risk limits
+    if risk_based_notional <= nominal_based_notional:
+        # Risk-based sizing is more restrictive
+        size_units = risk_based_size_units
+        notional = risk_based_notional
+    else:
+        # Nominal-based sizing is more restrictive
+        size_units = nominal_based_size_units
+        notional = nominal_based_notional
+    
+    # Cap by maximum leverage
     notional_cap = balance * max_lev
     if notional_cap > 0 and notional > notional_cap:
         scale = notional_cap / (notional + 1e-9)
         size_units *= scale
         notional = size_units * entry_px
+    
+    # Calculate suggested leverage
     suggested_leverage = min(max_lev, max(notional / balance, 1.0))
+    
     return float(size_units), float(notional), float(suggested_leverage)
 
 
@@ -558,7 +632,7 @@ def autosignal_once(assets: List[str], interval: str, days: int = 120) -> None:
     # Always use 1h for autosignal regardless of input interval
     autosignal_interval = "1h"
     if interval != autosignal_interval:
-        print(f"[autosignal] Overriding interval {interval} → {autosignal_interval} (autosignal always uses 1h)")
+        print(f"[autosignal] Overriding interval {interval} → {autosignal_interval} (autosignal always uses 4h)")
     
     # Validate interval - only allow 1h+ timeframes to avoid noise
     allowed_intervals = ["1h", "4h", "1d"]
@@ -812,10 +886,12 @@ def autosignal_once(assets: List[str], interval: str, days: int = 120) -> None:
 
     # Sizing with UI configuration overrides
     balance = ui_config.get("acct_balance", float(os.getenv("ACCOUNT_BALANCE_USD", "400")))
-    max_lev = ui_config.get("max_leverage", int(os.getenv("MAX_LEVERAGE", "5")))
+    max_lev = ui_config.get("max_leverage", int(os.getenv("MAX_LEVERAGE", "10")))
     risk_pct = ui_config.get("risk_per_trade_pct", float(os.getenv("RISK_PER_TRADE_PCT", "1.0")))
     
-    size_units, notional, lev = _size_position(setup["entry"], setup["stop"], balance, max_lev, risk_pct)
+    nominal_position_pct = ui_config.get("nominal_position_pct", 25.0)
+    size_units, notional, lev = _size_position(setup["entry"], setup["stop"], balance, max_lev, risk_pct, 
+                                              autosignal_interval, nominal_position_pct)
 
     # Get sentiment data for setup
     sentiment_info = {}
@@ -846,7 +922,7 @@ def autosignal_once(assets: List[str], interval: str, days: int = 120) -> None:
         "size_units": size_units,
         "notional_usd": notional,
         "leverage": lev,
-        "created_at": _now_local().isoformat(),
+        "created_at": _now_local().isoformat() if _now_local() else pd.Timestamp.now(tz='Asia/Kuala_Lumpur').isoformat(),
         "expires_at": setup["expires_at"].isoformat(),
         "status": "pending",
         "confidence": confidence,
@@ -869,7 +945,7 @@ def autosignal_once(assets: List[str], interval: str, days: int = 120) -> None:
     _append_setup_row(row)
     print(f"[autosignal] appended {row_id}: {direction} {asset} {autosignal_interval} "
           f"entry={row['entry']:.2f} stop={row['stop']:.2f} target={row['target']:.2f} "
-          f"rr={row['rr']:.2f} conf={row['confidence']:.3f}")
+          f"rr={row['rr']:.2f} conf={row['confidence']:.3f} created_at={row['created_at']}")
 
     # Telegram alert (optional)
     sentiment_text = ""
@@ -896,6 +972,7 @@ def autosignal_once(assets: List[str], interval: str, days: int = 120) -> None:
             f"RR: {row['rr']:.2f}\n"
             f"Confidence: {row['confidence']:.0%}{sentiment_text}{maxpain_text}\n"
             f"Size: {row['size_units']:.6f}  Notional: ${row['notional_usd']:.2f}  Lev: {row['leverage']:.1f}x\n"
+            f"Created at: {row['created_at']}\n"
             f"Valid until: {row['expires_at']}"
         )
     )

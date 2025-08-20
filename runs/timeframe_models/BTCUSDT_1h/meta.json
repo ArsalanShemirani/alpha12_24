@@ -1,0 +1,12 @@
+{
+  "asset": "BTCUSDT",
+  "interval": "1h",
+  "model_type": "rf",
+  "calibrated": true,
+  "samples": 1000,
+  "features": 44,
+  "trained_at": "2025-08-20T19:06:10.728433",
+  "performance_trigger": true,
+  "win_rate": 0,
+  "profit_factor": 0
+}

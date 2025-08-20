@@ -1,307 +1,228 @@
-# 🚀 Alpha12_24 - Advanced Cryptocurrency Trading System
+# 🚀 Alpha12_24 - Advanced Algorithmic Trading System
 
-Alpha12_24 is a comprehensive cryptocurrency trading system that combines machine learning, technical analysis, market microstructure, and advanced risk management to generate profitable trading signals.
+A comprehensive algorithmic trading platform with machine learning-powered signals, real-time risk management, and automated trade execution.
 
-## 🎯 Features
+## 📊 System Overview
 
-### 🤖 Machine Learning Models
-- **XGBoost**: Gradient boosting for high-performance predictions
-- **Random Forest**: Ensemble learning for robust signal generation
-- **Logistic Regression**: Interpretable baseline model
-- **Model Calibration**: Probability calibration for better signal quality
-
-### 📊 Technical Analysis
-- **RSI, MACD, Bollinger Bands**: Classic technical indicators
-- **Advanced Indicators**: ATR, ADX, CCI, Williams %R
-- **Multi-timeframe Analysis**: 5m to 1d intervals
-- **Market Microstructure**: Order flow, volatility, regime detection
-
-### 🌍 Market Data
-- **Multi-exchange Support**: Binance, Bybit, Deribit
-- **Real-time Data**: Live market feeds with fallback mechanisms
-- **ETF Flows**: Institutional flow tracking
-- **Macro Indicators**: Fear & Greed, DXY, VIX, Gold correlations
-
-### 🛡️ Risk Management
-- **Dynamic Position Sizing**: Based on volatility and confidence
-- **Leverage Optimization**: Adaptive leverage based on market conditions
-- **Stop-loss/Take-profit**: Automated risk management
-- **Portfolio Protection**: Maximum drawdown controls
-
-### 📈 Backtesting & Evaluation
-- **Walk-forward Backtesting**: Robust out-of-sample testing
-- **Signal Scoring**: Quality assessment of trading signals
-- **Hyperparameter Optimization**: Automated parameter tuning
-- **Performance Analytics**: Comprehensive metrics and visualizations
+**Alpha12_24** is a sophisticated trading system that combines:
+- **Machine Learning Models** for signal generation
+- **Real-time Risk Management** with dynamic position sizing
+- **Automated Trade Execution** with anti-stop-hunt features
+- **Comprehensive Dashboard** for monitoring and control
+- **Telegram Integration** for alerts and notifications
 
 ## 🏗️ Architecture
 
-```
-alpha12_24/
-├── config.yaml              # Configuration file
-├── requirements.txt          # Python dependencies
-├── src/
-│   ├── core/
-│   │   └── config.py        # Configuration management
-│   ├── data/
-│   │   ├── binance_free.py  # Binance data provider
-│   │   ├── bybit_free.py    # Bybit data provider
-│   │   ├── deribit_free.py  # Deribit data provider
-│   │   └── etf_flows.py     # ETF flow data
-│   ├── features/
-│   │   ├── engine.py        # Feature engineering
-│   │   └── macro.py         # Macro features
-│   ├── models/
-│   │   ├── train.py         # Model training
-│   │   └── calibrate.py     # Model calibration
-│   ├── policy/
-│   │   ├── thresholds.py    # Signal thresholds
-│   │   └── regime.py        # Market regime detection
-│   ├── trading/
-│   │   ├── planner.py       # Trade planning
-│   │   ├── leverage.py      # Leverage management
-│   │   └── logger.py        # Trading logger
-│   ├── backtest/
-│   │   └── runner.py        # Backtesting engine
-│   ├── eval/
-│   │   ├── score_signals.py # Signal scoring
-│   │   └── optimizer.py     # Hyperparameter optimization
-│   └── dashboard/
-│       └── app.py           # Streamlit dashboard
-├── artifacts/               # Model artifacts and logs
-└── README.md               # This file
-```
+### Core Modules
 
-## 🚀 Quick Start
+| Module | Lines | Purpose |
+|--------|-------|---------|
+| **Dashboard** | 3,816 | Streamlit web interface for setup creation and monitoring |
+| **Daemon** | 2,036 | Background tracker for automated trade execution |
+| **Data** | 2,297 | Data collection, processing, and feature engineering |
+| **Models** | 925 | Machine learning models for signal generation |
+| **Trading** | 1,070 | Trading logic, position sizing, and risk management |
+| **Evaluation** | 1,434 | Backtesting, performance analysis, and optimization |
+| **Features** | 850 | Technical indicators and feature engineering |
+| **Policy** | 574 | Trading policies and rules |
+| **Backtest** | 459 | Backtesting framework |
+| **Core** | 352 | Configuration and utilities |
 
-### 1. Installation
+**Total Codebase**: 18,218 lines of Python code across 139 files
 
-```bash
-# Clone the repository
-git clone <repository-url>
-cd alpha12_24
+## 🎯 Key Features
 
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+### 1. **Intelligent Signal Generation**
+- **Multi-Model Ensemble**: Random Forest, XGBoost, and composite models
+- **Feature Engineering**: 50+ technical indicators and market features
+- **Confidence Scoring**: Probability-based signal confidence
+- **Timeframe Optimization**: Different models for 15m, 1h, 4h, 1d intervals
 
-# Install core dependencies
-pip install -r requirements.txt
+### 2. **Advanced Risk Management**
+- **Dynamic Position Sizing**: Risk-based and nominal-based calculations
+- **Timeframe-Specific Risk**: 
+  - 15m: 0.5% risk (tighter stops)
+  - 1h: 1.0% risk (baseline)
+  - 4h: 1.5% risk (wider stops)
+  - 1d: 2.0% risk (widest stops)
+- **Consistent Dollar Risk**: 2.5% of account balance per trade
+- **Leverage Management**: Configurable up to 10x with safety caps
 
-# Optional: Install development dependencies for testing
-pip install -r requirements-dev.txt
-```
+### 3. **Anti Stop-Hunt Technology**
+- **Pullback Entries**: Entry below current price for longs, above for shorts
+- **Buffer Adjustments**: Shift entries deeper to avoid wick fills
+- **Close-Through Confirmation**: Optional bar close confirmation
+- **First-Touch Resolution**: Conservative exit logic
 
-#### Optional Dependencies
+### 4. **Real-Time Trade Execution**
+- **Automated Triggering**: 15-second polling for setup activation
+- **Exit Monitoring**: Continuous tracking of stop/target hits
+- **Expiration Management**: Automatic timeout handling
+- **Performance Logging**: Comprehensive trade history
 
-For enhanced functionality, you can install optional dependencies:
+### 5. **Comprehensive Dashboard**
+- **Live Price Charts**: Interactive candlestick charts with indicators
+- **Signal Analysis**: Real-time signal generation and confidence scoring
+- **Setup Management**: Create, monitor, and manage trade setups
+- **Performance Tracking**: Win rate, profit factor, drawdown analysis
+- **Account Management**: Balance, leverage, and position tracking
 
-```bash
-# XGBoost (for enhanced ML performance)
-pip install xgboost
+### 6. **Telegram Integration**
+- **Real-Time Alerts**: Setup triggers, exits, and expirations
+- **Performance Updates**: Daily/weekly performance summaries
+- **Error Notifications**: System status and error alerts
 
-# TA-Lib (for advanced technical indicators)
-# Note: TA-Lib requires system-level dependencies
-# macOS: brew install ta-lib
-# Ubuntu: sudo apt-get install ta-lib
-pip install TA-Lib
+## 🔧 Technical Specifications
 
-# Statsmodels (for trendline plotting)
-pip install statsmodels
-```
-
-### 2. Configuration
-
-Edit `config.yaml` to customize your settings:
-
-```yaml
-project:
-  assets: ["BTCUSDT"]
-  horizons_hours: [12, 24]
-  bar_interval: "5m"
-
-model:
-  learner: "xgb"
-  calibrate: true
-  train_days: 90
-  test_days: 14
-  embargo_hours: 24
-
-signal:
-  prob_long: 0.60
-  prob_short: 0.40
-  min_rr: 1.8
-
-risk:
-  risk_per_trade: 0.01
-  stop_min_frac: 0.003
-```
-
-### 3. Run Dashboard
-
-```bash
-# Start the Streamlit dashboard
-streamlit run src/dashboard/app.py
-```
-
-### 4. Run Backtest
-
+### Risk Management System
 ```python
-from src.backtest.runner import BacktestRunner
-from src.data.binance_free import BinanceFreeProvider
-from src.core.config import config
-
-# Initialize components
-provider = BinanceFreeProvider()
-runner = BacktestRunner(config)
-
-# Fetch data
-data = provider.get_historical_data("BTCUSDT", "1h", 90)
-
-# Run backtest
-result = runner.run_backtest(data, "BTCUSDT")
-print(f"Total Return: {result.performance_metrics['total_return']:.2%}")
-print(f"Sharpe Ratio: {result.performance_metrics['sharpe_ratio']:.2f}")
-```
-
-## 📊 Dashboard Features
-
-The Streamlit dashboard provides:
-
-- **Real-time Data Visualization**: Interactive price charts with technical indicators
-- **Signal Analysis**: Signal distribution and confidence analysis
-- **Model Performance**: Cross-validation metrics and feature importance
-- **Feature Analysis**: Correlation heatmaps and feature statistics
-- **Configuration Management**: Easy parameter adjustment
-
-## 🔧 Advanced Usage
-
-### Hyperparameter Optimization
-
-```python
-from src.eval.optimizer import HyperparameterOptimizer
-
-optimizer = HyperparameterOptimizer(config)
-
-# Optimize model parameters
-param_grid = {
-    'n_estimators': [100, 200, 300],
-    'max_depth': [6, 8, 10],
-    'learning_rate': [0.05, 0.1, 0.15]
+# Timeframe-Specific Risk Percentages
+risk_percentages = {
+    "15m": 0.5,  # $2,000 notional → $10 risk
+    "1h": 1.0,   # $1,000 notional → $10 risk  
+    "4h": 1.5,   # $666 notional → $10 risk
+    "1d": 2.0    # $500 notional → $10 risk
 }
 
-result = optimizer.optimize_model_hyperparameters(
-    data, param_grid, metric='sharpe_ratio', n_trials=20
-)
+# Position Sizing Formula
+Position Size = Dollar Risk / (Risk Percentage × Entry Price)
 ```
 
-### Signal Scoring
+### Signal Generation Pipeline
+1. **Data Collection**: Real-time price feeds from multiple sources
+2. **Feature Engineering**: Technical indicators, market microstructure
+3. **Model Prediction**: Ensemble of ML models with confidence scoring
+4. **Signal Filtering**: Confidence thresholds and market conditions
+5. **Setup Creation**: Entry, stop, target calculation with risk management
 
-```python
-from src.eval.score_signals import SignalScorer
-
-scorer = SignalScorer(config)
-
-# Score signals
-for signal in signals:
-    score = scorer.score_signal(
-        signal['signal'], signal['confidence'],
-        signal['prob_up'], signal['prob_down'],
-        current_price, future_price
-    )
-```
-
-### Custom Feature Engineering
-
-```python
-from src.features.engine import FeatureEngine
-
-engine = FeatureEngine()
-
-# Add custom features
-def add_custom_features(df):
-    df['custom_indicator'] = df['close'].rolling(20).mean() / df['close']
-    return df
-
-# Build feature matrix
-feature_df, feature_cols = engine.build_feature_matrix(data, [12, 24])
-```
+### Trade Lifecycle
+1. **Setup Creation**: Dashboard generates trade setups with risk parameters
+2. **Pending Status**: Setup waits for trigger conditions
+3. **Trigger Detection**: Price reaches entry level with anti-stop-hunt logic
+4. **Active Monitoring**: Continuous tracking of stop/target levels
+5. **Exit Resolution**: First-touch policy for conservative exits
+6. **Performance Logging**: Complete trade history with analytics
 
 ## 📈 Performance Metrics
 
-The system tracks comprehensive performance metrics:
+### Key Performance Indicators
+- **Win Rate**: Percentage of profitable trades
+- **Profit Factor**: Sum of gains / Sum of losses
+- **Maximum Drawdown**: Largest peak-to-trough decline
+- **Risk-Adjusted Returns**: Sharpe ratio and Calmar ratio
+- **Average Trade Duration**: Time from trigger to exit
 
-- **Returns**: Total return, average return, return volatility
-- **Risk Metrics**: Sharpe ratio, Sortino ratio, maximum drawdown
-- **Trading Metrics**: Win rate, profit factor, average win/loss
-- **Model Metrics**: Cross-validation accuracy, precision, recall, F1-score
-- **Signal Quality**: Signal consistency, confidence stability, diversity
+### Risk Metrics
+- **Per-Trade Risk**: Consistent 2.5% of account balance
+- **Position Sizing**: Dynamic based on volatility and timeframe
+- **Leverage Utilization**: Optimal use of available leverage
+- **Correlation Management**: Diversification across timeframes
 
-## 🛡️ Risk Management
+## 🚀 Getting Started
 
-### Position Sizing
-- Dynamic sizing based on volatility and confidence
-- Maximum position size limits
-- Portfolio-level risk controls
+### Prerequisites
+- Python 3.8+
+- Streamlit
+- Pandas, NumPy, Scikit-learn
+- Telegram Bot (optional)
 
-### Leverage Management
-- Adaptive leverage based on market conditions
-- Volatility-based scaling
-- Margin requirement monitoring
+### Installation
+```bash
+# Clone repository
+git clone <repository-url>
+cd alpha12_24
 
-### Stop-loss/Take-profit
-- Automated risk management
-- Dynamic stop-loss based on ATR
-- Risk/reward ratio optimization
+# Install dependencies
+pip install -r requirements.txt
 
-## 🔄 Walk-forward Backtesting
+# Set up environment variables
+cp .env.example .env
+# Edit .env with your configuration
 
-The system uses walk-forward backtesting to ensure robust performance:
+# Run dashboard
+streamlit run src/dashboard/app.py
 
-1. **Training Window**: 90 days of historical data
-2. **Testing Window**: 14 days of out-of-sample testing
-3. **Embargo Period**: 24 hours between train/test to prevent data leakage
-4. **Rolling Windows**: Continuous retraining and testing
+# Run tracker (in separate terminal)
+python src/daemon/tracker.py
+```
 
-## 📊 Data Sources
+### Configuration
+```python
+# Key Configuration Parameters
+ACCOUNT_BALANCE = 400.0          # Account balance in USD
+MAX_LEVERAGE = 10                # Maximum leverage allowed
+RISK_PER_TRADE_PCT = 2.5         # Risk per trade as % of balance
+NOMINAL_POSITION_PCT = 25.0      # Position size as % of nominal balance
+CONFIDENCE_THRESHOLD = 0.6       # Minimum confidence for signals
+```
 
-### Free APIs
-- **Binance**: OHLCV data, funding rates, open interest
-- **Bybit**: Market data and order book information
-- **Deribit**: Options data and volatility metrics
-- **Alternative.me**: Fear & Greed Index
-- **CoinGecko**: Market cap and volume data
+## 📊 Data Files
 
-### Synthetic Data
-- ETF flows (synthetic for now)
-- Macro indicators (synthetic for now)
-- Social sentiment (synthetic for now)
+### Core Data Storage
+- `runs/setups.csv`: Trade setups with risk parameters
+- `runs/trade_history.csv`: Complete trade execution history
+- `runs/features_at_signal.parquet`: Feature vectors for ML training
+- `runs/daemon_heartbeat.txt`: Tracker status monitoring
 
-## 🤝 Contributing
+### Configuration Files
+- `.env`: Environment variables and API keys
+- `src/core/config.py`: System configuration
+- `src/core/ui_config.py`: Dashboard UI settings
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+## 🔄 System Workflow
 
-## 📝 License
+### 1. Signal Generation
+```
+Market Data → Feature Engineering → ML Models → Signal Filtering → Setup Creation
+```
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+### 2. Risk Management
+```
+Setup → Position Sizing → Risk Calculation → Leverage Check → Execution
+```
 
-## ⚠️ Disclaimer
+### 3. Trade Execution
+```
+Setup Trigger → Entry Execution → Stop/Target Monitoring → Exit Resolution → Logging
+```
 
-This software is for educational and research purposes only. It is not intended to provide financial advice. Trading cryptocurrencies involves substantial risk of loss and is not suitable for all investors. Past performance does not guarantee future results.
+## 🛡️ Safety Features
 
-## 🆘 Support
+### Risk Controls
+- **Maximum Leverage**: Hard cap on leverage utilization
+- **Position Limits**: Maximum position size constraints
+- **Daily Limits**: Maximum trades per day
+- **Drawdown Protection**: Automatic shutdown on excessive losses
 
-For questions, issues, or contributions:
+### Error Handling
+- **Graceful Degradation**: System continues with reduced functionality
+- **Error Logging**: Comprehensive error tracking and reporting
+- **Recovery Mechanisms**: Automatic restart and recovery procedures
+- **Data Validation**: Input validation and sanitization
 
-1. Check the documentation
-2. Search existing issues
-3. Create a new issue with detailed information
-4. Join our community discussions
+## 🔮 Future Enhancements
+
+### Planned Features
+- **Trailing Stop-Loss**: Dynamic stop adjustment based on price movement
+- **Portfolio Management**: Multi-asset correlation and diversification
+- **Advanced Analytics**: Machine learning for parameter optimization
+- **Mobile App**: Native mobile application for monitoring
+- **API Integration**: REST API for external system integration
+
+### Performance Optimizations
+- **Real-Time Processing**: Sub-second signal generation
+- **Scalability**: Support for multiple exchanges and assets
+- **Backtesting Engine**: Advanced historical performance analysis
+- **Risk Modeling**: Monte Carlo simulation and stress testing
+
+## 📞 Support
+
+For technical support, feature requests, or bug reports:
+- **Documentation**: Comprehensive inline code documentation
+- **Logging**: Detailed system logs for troubleshooting
+- **Monitoring**: Real-time system status and performance metrics
 
 ---
 
-**🚀 Happy Trading! 🚀**
+**Alpha12_24** - Advanced Algorithmic Trading System  
+*Built for professional traders and quantitative analysts*

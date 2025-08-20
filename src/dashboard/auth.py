@@ -61,6 +61,23 @@ def login_gate() -> bool:
 
     # Already authenticated in this session
     if st.session_state.get("is_authenticated") is True:
+        # Check for session timeout (24 hours)
+        auth_time = st.session_state.get("auth_time", 0)
+        current_time = int(time.time())
+        session_timeout = 24 * 60 * 60  # 24 hours in seconds
+        
+        if current_time - auth_time > session_timeout:
+            # Session expired, clear auth state
+            st.session_state["is_authenticated"] = False
+            st.session_state["auth_user"] = None
+            st.session_state["auth_time"] = None
+            st.session_state["auth_just_logged_in"] = False
+        else:
+            return True
+    
+    # Check if we're in the middle of a rerun after successful login
+    if st.session_state.get("auth_just_logged_in") is True:
+        st.session_state["auth_just_logged_in"] = False
         return True
 
     username_env = os.getenv("DASH_USERNAME", "").strip()
@@ -95,8 +112,9 @@ export DASH_PASSWORD=strong_password
                 st.session_state["is_authenticated"] = True
                 st.session_state["auth_user"] = user
                 st.session_state["auth_time"] = int(time.time())
+                st.session_state["auth_just_logged_in"] = True
                 st.success("Authenticated. Loading dashboard...")
-                st.experimental_rerun()
+                st.rerun()
             else:
                 st.error("Invalid credentials")
 
@@ -132,6 +150,6 @@ def render_logout_sidebar():
     if st.button("Log out", use_container_width=True):
         # Clear all session state
         st.session_state.clear()
-        st.experimental_rerun()
+        st.rerun()
 
 

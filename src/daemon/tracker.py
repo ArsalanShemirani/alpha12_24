@@ -580,7 +580,7 @@ def track_loop(symbol_default="BTCUSDT", interval_default="5m", sleep_seconds=15
                 time.sleep(max(3, int(sleep_seconds)))
                 continue
 
-            watch = df[df["status"].isin(["pending","triggered"])].copy()
+            watch = df[df["status"].isin(["pending","triggered","executed"])].copy()
             if watch.empty:
                 time.sleep(max(3, int(sleep_seconds)))
                 continue
@@ -648,9 +648,9 @@ def track_loop(symbol_default="BTCUSDT", interval_default="5m", sleep_seconds=15
                             interval_minutes = {"5m": 5, "15m": 15, "1h": 60, "4h": 240, "1d": 1440}.get(iv, 5)
                             candle_start = bar_ts - pd.Timedelta(minutes=interval_minutes)
                             
-                            if setup_created_at > candle_start:
-                                # Setup was created during this candle, skip trigger check
-                                # This prevents triggering on price movements that happened before setup creation
+                            # Skip trigger check if setup was created during this candle
+                            # This prevents triggering on price movements that happened before setup creation
+                            if setup_created_at >= candle_start:
                                 continue
                         
                         if _trigger_touch(rule, buf, str(row["direction"]), float(row["entry"]), bar):
@@ -661,10 +661,34 @@ def track_loop(symbol_default="BTCUSDT", interval_default="5m", sleep_seconds=15
                                 df.loc[idx, "price_at_trigger"] = float(bar["close"])  # alias field for logs
                             # Convert to Malaysian time for Telegram alert
                             bar_ts_my = bar_ts.tz_convert(MY_TZ) if bar_ts.tz is not None else bar_ts.tz_localize('UTC').tz_convert(MY_TZ)
-                            _tg_send(f"Setup TRIGGERED {asset} {iv} @ {float(bar['close']):.2f}\\nTime: {bar_ts_my.strftime('%Y-%m-%d %H:%M:%S')} MY")
+                            # Check if this is an executed setup
+                            execution_type = ""
+                            if row.get('status') == 'executed':
+                                execution_type = " (ACTIVE EXECUTED)"
+                            
+                            _tg_send(f"Setup TRIGGERED{execution_type} {asset} {iv} ({row['direction'].upper()})\\nEntry: {row['entry']:.2f} → Triggered @ {float(bar['close']):.2f}\\nStop: {row['stop']:.2f} | Target: {row['target']:.2f}\\nTime: {bar_ts_my.strftime('%Y-%m-%d %H:%M:%S')} MY")
                             continue
 
-                    if status == "triggered":
+                    # Check for trigger on executed setups that haven't been triggered yet
+                    if status == "executed":
+                        rule = str(row.get("trigger_rule", "touch"))
+                        buf = float(row.get("entry_buffer_bps", 5.0))
+                        
+                        if _trigger_touch(rule, buf, str(row["direction"]), float(row["entry"]), bar):
+                            df.loc[idx, "status"] = "triggered"
+                            df.loc[idx, "trigger_ts"] = bar_ts
+                            df.loc[idx, "trigger_price"] = float(bar["close"])  # conservative
+                            if pd.isna(row.get("trigger_price")) and "trigger_price" in df.columns:
+                                df.loc[idx, "price_at_trigger"] = float(bar["close"])  # alias field for logs
+                            # Convert to Malaysian time for Telegram alert
+                            bar_ts_my = bar_ts.tz_convert(MY_TZ) if bar_ts.tz is not None else bar_ts.tz_localize('UTC').tz_convert(MY_TZ)
+                            # Check if this is an executed setup
+                            execution_type = " (ACTIVE EXECUTED)"
+                            
+                            _tg_send(f"Setup TRIGGERED{execution_type} {asset} {iv} ({row['direction'].upper()})\\nEntry: {row['entry']:.2f} → Triggered @ {float(bar['close']):.2f}\\nStop: {row['stop']:.2f} | Target: {row['target']:.2f}\\nTime: {bar_ts_my.strftime('%Y-%m-%d %H:%M:%S')} MY")
+                            continue
+                    
+                    if status == "triggered" or status == "executed":
                         trig_ts = pd.to_datetime(row.get("trigger_ts"), errors="coerce", utc=True)
                         if pd.isna(trig_ts):
                             trig_ts = bar_ts
@@ -685,18 +709,40 @@ def track_loop(symbol_default="BTCUSDT", interval_default="5m", sleep_seconds=15
                         except Exception:
                             win = None
 
-                        # Single-pass outcome resolution
-                        outcome = _resolve_exit(
-                            str(row["direction"]),
-                            float(row["entry"]),
-                            float(row["stop"]),
-                            float(row["target"]),
-                            bar
-                        )
+                        # Check all bars since trigger for exit detection
+                        outcome = None
                         exit_px, exit_ts = None, None
-                        if outcome is not None:
-                            exit_ts = bar_ts
-                            exit_px = float(row["target"]) if outcome == "target" else float(row["stop"])
+                        
+                        if win is not None and not win.empty:
+                            # Check each bar in the window for exit hits
+                            for _, win_bar in win.iterrows():
+                                win_bar_dict = win_bar.to_dict()
+                                win_bar_dict["ts"] = win_bar.name  # Ensure timestamp is available
+                                win_outcome = _resolve_exit(
+                                    str(row["direction"]),
+                                    float(row["entry"]),
+                                    float(row["stop"]),
+                                    float(row["target"]),
+                                    win_bar_dict
+                                )
+                                if win_outcome is not None:
+                                    outcome = win_outcome
+                                    exit_ts = win_bar.name
+                                    exit_px = float(row["target"]) if outcome == "target" else float(row["stop"])
+                                    break
+                        
+                        # If no exit found in window, check current bar
+                        if outcome is None:
+                            outcome = _resolve_exit(
+                                str(row["direction"]),
+                                float(row["entry"]),
+                                float(row["stop"]),
+                                float(row["target"]),
+                                bar
+                            )
+                            if outcome is not None:
+                                exit_ts = bar_ts
+                                exit_px = float(row["target"]) if outcome == "target" else float(row["stop"])
 
                         # timeout if reached expiry with no hit
                         if outcome is None and end_ts >= exp:
@@ -730,7 +776,12 @@ def track_loop(symbol_default="BTCUSDT", interval_default="5m", sleep_seconds=15
                             emoji = outcome_emoji.get(outcome, "📊")
                             # Convert to Malaysian time for Telegram alert
                             exit_ts_my = exit_ts.tz_convert(MY_TZ) if exit_ts.tz is not None else exit_ts.tz_localize('UTC').tz_convert(MY_TZ)
-                            _tg_send(f"Setup {outcome.upper()} {asset} {iv}\\nEntry: {entry_px:.2f} → Exit: {float(exit_px):.2f}\\nPnL: {float(pnl_pct):.2f}%\\nTime: {exit_ts_my.strftime('%Y-%m-%d %H:%M:%S')} MY")
+                            # Check if this was an executed setup
+                            execution_type = ""
+                            if row.get('status') == 'executed':
+                                execution_type = " (EXECUTED)"
+                            
+                            _tg_send(f"Setup {outcome.upper()}{execution_type} {asset} {iv}\\nEntry: {entry_px:.2f} → Exit: {float(exit_px):.2f}\\nPnL: {float(pnl_pct):.2f}%\\nTime: {exit_ts_my.strftime('%Y-%m-%d %H:%M:%S')} MY")
 
             # Save updated setups with proper schema
             _save_setups_df(df)
