@@ -64,28 +64,55 @@ class TradingPlanner:
         return position_size
     
     def calculate_stop_loss(self, entry_price: float, signal: str, 
-                          volatility: float, atr: Optional[float] = None) -> float:
+                          volatility: float, atr: Optional[float] = None,
+                          interval: str = "1h", balance: float = 400.0) -> float:
         """
-        Calculate stop loss price
+        Calculate stop loss price based on target risk percentage per timeframe
         
         Args:
             entry_price: Entry price
             signal: Trading signal ('LONG' or 'SHORT')
             volatility: Current volatility
             atr: Average True Range (optional)
+            interval: Timeframe ('15m', '1h', '4h', '1d')
+            balance: Account balance
         
         Returns:
             Stop loss price
         """
-        # Use ATR if available, otherwise use volatility
-        if atr is not None:
-            stop_distance = atr * 2  # 2x ATR
-        else:
-            stop_distance = entry_price * volatility * 2  # 2x volatility
+        # Get timeframe-specific target notional and risk percentage
+        timeframe_notional = {
+            "15m": 2000.0,
+            "1h": 1000.0,
+            "4h": 667.0,
+            "1d": 500.0
+        }
+        timeframe_risk_pct = {
+            "15m": 0.5,
+            "1h": 1.0,
+            "4h": 1.5,
+            "1d": 2.0
+        }
         
-        # Ensure minimum stop distance
-        min_stop_distance = entry_price * self.stop_min_frac
-        stop_distance = max(stop_distance, min_stop_distance)
+        target_notional = timeframe_notional.get(interval, 1000.0)
+        target_risk_pct = timeframe_risk_pct.get(interval, 1.0)
+        
+        # Calculate position size to achieve target notional
+        position_size = target_notional / entry_price
+        
+        # Calculate required stop distance to achieve target risk percentage
+        target_dollar_risk = (target_risk_pct / 100.0) * balance
+        stop_distance = target_dollar_risk / position_size
+        
+        # Ensure minimum stop distance (fallback to ATR-based if too small)
+        if atr is not None:
+            min_stop_distance = atr * 1.5  # 1.5x ATR minimum
+        else:
+            min_stop_distance = entry_price * volatility * 1.5
+        
+        if stop_distance < min_stop_distance:
+            print(f"[planner] {interval}: Using ATR-based stop distance (required: {stop_distance:.2f} < min: {min_stop_distance:.2f})")
+            stop_distance = min_stop_distance
         
         if signal == "LONG":
             stop_loss = entry_price - stop_distance
@@ -129,7 +156,8 @@ class TradingPlanner:
                          confidence: float, volatility: float,
                          atr: Optional[float] = None,
                          portfolio_value: Optional[float] = None,
-                         regime_implications: Optional[Dict] = None) -> TradePlan:
+                         regime_implications: Optional[Dict] = None,
+                         interval: str = "1h", balance: float = 400.0) -> TradePlan:
         """
         Create complete trade plan
         
@@ -159,7 +187,7 @@ class TradingPlanner:
             take_profit_multiplier = regime_implications.get('take_profit_multiplier', 1.0)
         
         # Calculate stop loss
-        stop_loss = self.calculate_stop_loss(entry_price, signal, volatility, atr)
+        stop_loss = self.calculate_stop_loss(entry_price, signal, volatility, atr, interval, balance)
         stop_loss = entry_price + (stop_loss - entry_price) * stop_multiplier
         
         # Calculate take profit with target risk/reward

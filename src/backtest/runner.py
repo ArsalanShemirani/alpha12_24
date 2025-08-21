@@ -236,7 +236,9 @@ class BacktestRunner:
                     confidence=confidence,
                     volatility=volatility,
                     regime_implications=regime_implications,
-                    portfolio_value=self.portfolio_value
+                    portfolio_value=self.portfolio_value,
+                    interval=getattr(self.config, 'bar_interval', '1h'),
+                    balance=self.portfolio_value
                 )
                 
                 if trade_plan:

@@ -580,7 +580,8 @@ def track_loop(symbol_default="BTCUSDT", interval_default="5m", sleep_seconds=15
                 time.sleep(max(3, int(sleep_seconds)))
                 continue
 
-            watch = df[df["status"].isin(["pending","triggered","executed"])].copy()
+            # Only process auto setups, not manual setups (manual setups are managed by user)
+            watch = df[(df["status"].isin(["pending","triggered","executed"])) & (df["origin"] == "auto")].copy()
             if watch.empty:
                 time.sleep(max(3, int(sleep_seconds)))
                 continue

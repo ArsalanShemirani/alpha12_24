@@ -214,7 +214,7 @@ def _to_my_tz_index(idx) -> pd.DatetimeIndex:
 SETUP_FIELDS = [
     "id","asset","interval","direction","entry","stop","target","rr",
     "size_units","notional_usd","leverage",
-    "created_at","expires_at","status","confidence","trigger_rule","entry_buffer_bps",
+    "created_at","expires_at","triggered_at","status","confidence","trigger_rule","entry_buffer_bps",
     "origin"
 ]
 
@@ -239,7 +239,7 @@ def _load_setups_df() -> pd.DataFrame:
         if c not in df.columns:
             df[c] = np.nan
     df = df[SETUP_FIELDS].copy()
-    for c in ("created_at","expires_at"):
+    for c in ("created_at","expires_at","triggered_at"):
         if c in df.columns:
             ts = pd.to_datetime(df[c], errors="coerce", utc=True)
             try:
@@ -259,7 +259,7 @@ def _append_setup_row(row: dict):
     write_header = not os.path.exists(p)
     safe_row = {k: row.get(k, "") if row.get(k) is not None else "" for k in SETUP_FIELDS}
     with open(p, "a", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=SETUP_FIELDS, extrasaction="ignore", quoting=csv.QUOTE_MINIMAL)
+        w = csv.DictWriter(f, fieldnames=SETUP_FIELDS, extrasaction="ignore", quoting=csv.QUOTE_ALL)
         if write_header:
             w.writeheader()
         w.writerow(safe_row)
@@ -508,25 +508,81 @@ def _build_setup(direction: str, price: float, atr: float, rr: float,
     }
 
 
-def build_autosetup_levels(direction: str, last_price: float, atr: float, rr: float, interval: str = "1h") -> dict:
+def build_autosetup_levels(direction: str, last_price: float, atr: float, rr: float, interval: str = "1h", features: dict = None) -> dict:
     """
     Compute entry/stop/target levels for autosignal setups.
-    Uses timeframe-specific stop loss distances to maintain consistent risk.
+    Uses timeframe-specific stop loss percentages of entry price.
+    Uses adaptive selector for take profit calculation if features available.
     """
     k_entry = K_ENTRY_DEFAULT
     
-    # Apply timeframe-specific stop loss multiplier
-    stop_multiplier = _get_timeframe_stop_multiplier(interval)
-    k_stop = max(1.0, rr / 1.8) * stop_multiplier
+    # Get timeframe-specific stop loss percentage of entry price
+    stop_loss_pct = {
+        "15m": 0.5,   # 0.5% of entry price
+        "1h": 1.0,    # 1.0% of entry price
+        "4h": 1.5,    # 1.5% of entry price
+        "1d": 2.0     # 2.0% of entry price
+    }
+    
+    stop_pct = stop_loss_pct.get(interval, 1.0)
     
     if direction == "long":
         entry = last_price - k_entry * atr
-        stop = entry - k_stop * atr
-        target = entry + rr * (entry - stop)
+        stop = entry * (1.0 - stop_pct / 100.0)  # Stop loss as percentage of entry
     else:
         entry = last_price + k_entry * atr
-        stop = entry + k_stop * atr
-        target = entry - rr * (stop - entry)
+        stop = entry * (1.0 + stop_pct / 100.0)  # Stop loss as percentage of entry
+    
+    # Try to use adaptive selector for take profit if features are available
+    if features is not None:
+        try:
+            from src.trading.adaptive_selector import adaptive_selector
+            
+            # Prepare features (no macro inputs)
+            clean_features = {k: v for k, v in features.items() 
+                            if not k.startswith(('vix_', 'dxy_', 'gold_', 'treasury_', 'inflation_', 'fed_'))}
+            
+            # Select optimal stop/target using adaptive selector
+            result = adaptive_selector.select_optimal_stop_target(
+                features=clean_features,
+                atr=atr,
+                timeframe=interval,
+                entry_price=entry,
+                direction=direction
+            )
+            
+            if result.success:
+                # Use adaptive selector result for target, but keep our calculated stop
+                target = result.target_price
+                rr = result.rr
+                print(f"[autosignal] {interval}: Using adaptive selector - RR: {rr:.2f}, p_hit: {result.p_hit:.3f}, EV_R: {result.ev_r:.4f}")
+            else:
+                # Fall back to fixed R:R calculation with timeframe cap
+                rr_cap = {"15m": 1.5, "1h": 1.7, "4h": 2.0, "1d": 2.8}.get(interval, 1.5)
+                capped_rr = min(rr, rr_cap)
+                target = entry + capped_rr * (entry - stop) if direction == "long" else entry - capped_rr * (stop - entry)
+                print(f"[autosignal] {interval}: Adaptive selector failed, using capped RR: {capped_rr:.2f} (original: {rr:.2f})")
+                
+        except Exception as e:
+            # Fall back to fixed R:R calculation with timeframe cap
+            rr_cap = {"15m": 1.5, "1h": 1.7, "4h": 2.0, "1d": 2.8}.get(interval, 1.5)
+            capped_rr = min(rr, rr_cap)
+            target = entry + capped_rr * (entry - stop) if direction == "long" else entry - capped_rr * (stop - entry)
+            print(f"[autosignal] {interval}: Adaptive selector error: {e}, using capped RR: {capped_rr:.2f} (original: {rr:.2f})")
+    else:
+        # Use fixed R:R calculation when no features available with timeframe cap
+        rr_cap = {"15m": 1.5, "1h": 1.7, "4h": 2.0, "1d": 2.8}.get(interval, 1.5)
+        capped_rr = min(rr, rr_cap)
+        target = entry + capped_rr * (entry - stop) if direction == "long" else entry - capped_rr * (stop - entry)
+    
+    # Update R:R to reflect the actual capped value used
+    if features is None or not result.success:
+        # For fallback cases, calculate the actual R:R used
+        if direction == "long":
+            actual_rr = (target - entry) / (entry - stop) if entry > stop else rr
+        else:
+            actual_rr = (entry - target) / (stop - entry) if stop > entry else rr
+        rr = actual_rr
     
     # Expiry in bars; caller will translate to minutes based on interval
     return {"entry": entry, "stop": stop, "target": target, "rr": rr, "valid_bars": VALID_BARS_MIN}
@@ -591,36 +647,37 @@ def _size_position(entry_px: float, stop_px: float, balance: float, max_lev: int
     """
     Return (size_units, notional_usd, suggested_leverage).
     
-    Implements timeframe-specific position sizing with target notional amounts:
-    - 15m: $2,000 notional, 0.5% risk, $10 dollar risk, 10x display leverage
-    - 1h: $1,000 notional, 1.0% risk, $10 dollar risk, 10x display leverage  
-    - 4h: $667 notional, 1.5% risk, $10 dollar risk, 10x display leverage
-    - 1d: $500 notional, 2.0% risk, $10 dollar risk, 10x display leverage
+    Implements timeframe-specific position sizing with consistent dollar risk:
+    - All timeframes: Dollar risk = 2.5% of user-set balance
+    - Position size calculated to achieve exactly 2.5% of balance risk
+    - Notional amounts vary based on position size and entry price
+    - Always 10x display leverage
     
-    Position size calculated to achieve target notional, which gives correct risk %.
+    This ensures all trades lose maximum 2.5% of actual balance.
     """
-    # Get timeframe-specific target notional
-    target_notional = _get_timeframe_notional(interval)
+    # Calculate stop distance
+    stop_dist = abs(entry_px - stop_px)
+    if stop_dist <= 0:
+        return 0.0, 0.0, float(max_lev)
     
-    # Calculate position size to achieve target notional
-    size_units = target_notional / entry_px
+    # Calculate position size to achieve exactly 2.5% of balance risk
+    target_dollar_risk = balance * 0.025  # Always 2.5% of user-set balance
+    size_units = target_dollar_risk / stop_dist
     
     # Calculate actual notional
     notional = size_units * entry_px
     
-    # Calculate actual dollar risk and risk percentage
-    stop_dist = abs(entry_px - stop_px)
-    if stop_dist > 0:
-        actual_dollar_risk = size_units * stop_dist
-        actual_risk_pct = (actual_dollar_risk / balance) * 100.0
-    else:
-        actual_dollar_risk = 0.0
-        actual_risk_pct = 0.0
+    # Calculate actual dollar risk for verification
+    actual_dollar_risk = size_units * stop_dist
+    actual_risk_pct = (actual_dollar_risk / balance) * 100.0
     
-    # Get timeframe-specific risk percentage for reference
+    # Get timeframe-specific target notional for reference
+    target_notional = _get_timeframe_notional(interval)
     timeframe_risk_pct = _get_timeframe_risk_percentage(interval)
     
     print(f"[autosignal] {interval} position sizing:")
+    print(f"  Balance: ${balance:,.2f}")
+    print(f"  Target dollar risk: ${target_dollar_risk:.2f} (2.5% of balance)")
     print(f"  Target notional: ${target_notional:,.0f}")
     print(f"  Actual notional: ${notional:,.0f}")
     print(f"  Target risk: {timeframe_risk_pct}%")
@@ -927,11 +984,30 @@ def autosignal_once(assets: List[str], interval: str, days: int = 120) -> None:
     k_entry = max(k_entry, 0.10)
     valid_bars = max(valid_bars, VALID_BARS_MIN)
     
-    setup = _build_setup(
-        direction=direction, price=price, atr=atr_val, rr=min_rr,
-        k_entry=k_entry, k_stop=k_stop, valid_bars=valid_bars,
-        now_ts=_now_local(), bar_interval=autosignal_interval, entry_buffer_bps=entry_buffer_bps
+    # Get features for adaptive selector if available
+    features = None
+    try:
+        from src.features.engine import FeatureEngine
+        feature_engine = FeatureEngine()
+        feature_df, feature_cols = feature_engine.build_feature_matrix(df, horizons_hours=24)
+        if not feature_df.empty:
+            features = feature_df.iloc[-1].to_dict()
+    except Exception as e:
+        print(f"[autosignal] Could not build features for adaptive selector: {e}")
+    
+    setup = build_autosetup_levels(
+        direction=direction, last_price=price, atr=atr_val, rr=min_rr,
+        interval=autosignal_interval, features=features
     )
+    
+    # Add expiry time
+    per_bar_min = {"5m":5, "15m":15, "1h":60, "4h":240, "1d":1440}.get(autosignal_interval, 60)
+    base_now = pd.to_datetime(_now_local(), utc=True)
+    try:
+        base_now = base_now.tz_convert(MY_TZ)
+    except Exception:
+        pass
+    setup["expires_at"] = base_now + pd.Timedelta(minutes=valid_bars * per_bar_min)
 
     # Sizing with UI configuration overrides
     balance = ui_config.get("acct_balance", float(os.getenv("ACCOUNT_BALANCE_USD", "400")))
@@ -973,6 +1049,7 @@ def autosignal_once(assets: List[str], interval: str, days: int = 120) -> None:
         "leverage": lev,
         "created_at": _now_local().isoformat() if _now_local() else pd.Timestamp.now(tz='Asia/Kuala_Lumpur').isoformat(),
         "expires_at": setup["expires_at"].isoformat(),
+        "triggered_at": "",  # Will be set when setup is triggered
         "status": "pending",
         "confidence": confidence,
         # autosignal prefers touch; dashboard may use close-through
@@ -995,6 +1072,25 @@ def autosignal_once(assets: List[str], interval: str, days: int = 120) -> None:
     print(f"[autosignal] appended {row_id}: {direction} {asset} {autosignal_interval} "
           f"entry={row['entry']:.2f} stop={row['stop']:.2f} target={row['target']:.2f} "
           f"rr={row['rr']:.2f} conf={row['confidence']:.3f} created_at={row['created_at']}")
+
+    # Shadow stop logging (Phase-1, no behavior change)
+    try:
+        from src.trading.shadow_stops import compute_and_log_shadow_stop
+        shadow_result = compute_and_log_shadow_stop(
+            setup_id=row_id,
+            tf=autosignal_interval,
+            entry_price=float(row["entry"]),
+            applied_stop_price=float(row["stop"]),
+            rr_planned=float(row["rr"]),
+            data=df,  # OHLCV data for ATR computation
+            p_hit=None,  # Could be extracted from adaptive selector if available
+            conf=confidence,
+            outcome="pending"
+        )
+        print(f"[autosignal] shadow stop logged: valid={shadow_result.shadow_valid}, "
+              f"dynamic_stop_R={shadow_result.dynamic_stop_candidate_R:.3f if shadow_result.dynamic_stop_candidate_R else 'N/A'}")
+    except Exception as e:
+        print(f"[autosignal] shadow stop logging error: {e}")
 
     # Telegram alert (optional)
     sentiment_text = ""

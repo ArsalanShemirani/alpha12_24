@@ -345,7 +345,7 @@ def _append_setup_row(row: dict):
             f,
             fieldnames=SETUP_FIELDS,
             extrasaction="ignore",
-            quoting=csv.QUOTE_MINIMAL
+            quoting=csv.QUOTE_ALL
         )
         if write_header:
             w.writeheader()
@@ -1236,9 +1236,11 @@ def run_dashboard_analysis(asset: str, interval: str, days: int, model_type: str
                 # Ensure we have a valid timestamp for setup creation
                 try:
                     now_ts = _to_my_tz_ts(latest_sig.get("timestamp", data.index[-1]))
-                except Exception:
+                    print(f"[dashboard] Setup creation timestamp: {now_ts}")
+                except Exception as e:
                     # Fallback to current time if timestamp extraction fails
                     now_ts = pd.Timestamp.now(tz="UTC").tz_convert(MY_TZ)
+                    print(f"[dashboard] Timestamp extraction failed: {e}, using current time: {now_ts}")
                 # Get features for adaptive selector
                 features = None
                 if 'feature_df' in locals() and not feature_df.empty:
@@ -1259,70 +1261,57 @@ def run_dashboard_analysis(asset: str, interval: str, days: int, model_type: str
                     except Exception as e:
                         st.warning(f"Feature extraction failed: {e}")
                 
-                setup_levels = _build_setup(
-                    direction=direction, price=last_price, atr=atr_val, rr=rr,
-                    k_entry=float(st.session_state.get("k_entry", 0.5)),
-                    k_stop=float(st.session_state.get("k_stop", 1.0)),
-                    valid_bars=int(st.session_state.get("valid_bars", 24)),
-                    now_ts=now_ts, bar_interval=interval,
-                    entry_buffer_bps=float(st.session_state.get("entry_buffer_bps", 5.0)),
-                    features=features,
+                # Use the same build_autosetup_levels function as auto setups for consistency
+                from src.daemon.autosignal import build_autosetup_levels
+                
+                # For manual setups, add a buffer to prevent immediate triggering
+                # Use a larger entry buffer for manual setups to ensure they don't trigger immediately
+                manual_entry_buffer = 1.0  # 1.0 ATR buffer for manual setups
+                
+                if direction == "long":
+                    # For long setups, entry should be below current price with buffer
+                    entry_price = last_price - manual_entry_buffer * atr_val
+                else:
+                    # For short setups, entry should be above current price with buffer
+                    entry_price = last_price + manual_entry_buffer * atr_val
+                
+                setup_levels = build_autosetup_levels(
+                    direction=direction, last_price=entry_price, atr=atr_val, rr=rr, interval=interval, features=features
                 )
+                
+                # Debug: Log entry price calculation
+                print(f"[dashboard] Manual setup entry calculation:")
+                print(f"  Current market price: {last_price:.2f}")
+                print(f"  ATR: {atr_val:.2f}")
+                print(f"  Manual entry buffer: {manual_entry_buffer:.2f} ATR")
+                print(f"  Calculated entry price: {entry_price:.2f}")
+                print(f"  Final entry price: {setup_levels['entry']:.2f}")
+                print(f"  Direction: {direction}")
+                print(f"  Distance from current price: {abs(last_price - setup_levels['entry']):.2f} ({abs(last_price - setup_levels['entry'])/last_price*100:.2f}%)")
+                print(f"  Stop: {setup_levels['stop']:.2f}")
+                print(f"  Target: {setup_levels['target']:.2f}")
+                print(f"  RR: {setup_levels['rr']:.2f}")
+                
+                # Add expires_at to setup_levels
+                valid_bars = int(st.session_state.get("valid_bars", 24))
+                per_bar_min = {"5m":5, "15m":15, "1h":60, "4h":240, "1d":1440}.get(interval, 60)
+                expires_at = pd.to_datetime(now_ts) + pd.Timedelta(minutes=valid_bars * per_bar_min)
+                setup_levels["expires_at"] = expires_at
                 if setup_levels:
-                    # --- Position sizing (timeframe-specific risk management) ---
+                    # --- Position sizing (consistent with auto setups) ---
                     try:
                         balance = float(st.session_state.get("acct_balance", 400.0))
                         max_lev = int(st.session_state.get("max_leverage", 10))
-                        nominal_position_pct = float(st.session_state.get("nominal_position_pct", 25.0))
-                        
-                        # Get timeframe-specific risk percentage
-                        timeframe_risk_pct = _get_timeframe_risk_percentage(interval)
-                        
-                        # Calculate nominal account value (balance * max leverage)
-                        nominal_balance = balance * max_lev
-                        
-                        # Calculate target nominal position size (25% of nominal balance)
-                        target_nominal_position = nominal_balance * (nominal_position_pct / 100.0)
-                        
-                        # Calculate risk amount (dynamic based on UI setting)
-                        # This ensures the same dollar risk regardless of timeframe
                         risk_per_trade_pct = float(st.session_state.get("risk_per_trade_pct", 2.5))
-                        risk_amt = balance * (risk_per_trade_pct / 100.0)
                         
                         entry_px = float(setup_levels["entry"])
                         stop_px = float(setup_levels["stop"])
-                        stop_dist = abs(entry_px - stop_px)
                         
-                        if stop_dist <= 0 or balance <= 0:
-                            size_units = 0.0
-                            notional = 0.0
-                            suggested_leverage = 1.0
-                        else:
-                            # Calculate position size based on risk percentage of notional value
-                            # Position Size = Dollar Risk / (Risk Percentage × Entry Price)
-                            risk_based_size_units = risk_amt / ((timeframe_risk_pct / 100.0) * entry_px)
-                            risk_based_notional = risk_based_size_units * entry_px
-                            
-                            # Calculate position size based on nominal target (25% of nominal balance)
-                            nominal_based_size_units = target_nominal_position / entry_px
-                            nominal_based_notional = nominal_based_size_units * entry_px
-                            
-                            # Use timeframe-specific target notional amounts
-                            def get_timeframe_notional(tf):
-                                timeframe_notional = {
-                                    "15m": 2000.0,
-                                    "1h": 1000.0,
-                                    "4h": 667.0,
-                                    "1d": 500.0
-                                }
-                                return timeframe_notional.get(tf, 1000.0)
-                            
-                            target_notional = get_timeframe_notional(interval)
-                            size_units = target_notional / entry_px
-                            notional = size_units * entry_px
-                            
-                            # Always use maximum leverage for display (10x)
-                            suggested_leverage = float(max_lev)
+                        # Use the same _size_position function as auto setups for consistency
+                        from src.daemon.autosignal import _size_position
+                        size_units, notional, suggested_leverage = _size_position(
+                            entry_px, stop_px, balance, max_lev, risk_per_trade_pct, interval
+                        )
                     except Exception:
                         size_units = 0.0
                         notional = 0.0
@@ -1466,7 +1455,17 @@ def run_dashboard_analysis(asset: str, interval: str, days: int, model_type: str
                     setup_id = _mk_setup_id(asset, interval)
                     trigger_rule = "touch"  # Same as autosignal
                     # Ensure timestamps are properly formatted
-                    created_at = _to_my_tz_ts(now_ts)
+                    try:
+                        created_at = _to_my_tz_ts(now_ts)
+                        if pd.isna(created_at):
+                            # Fallback to current time if now_ts is invalid
+                            created_at = pd.Timestamp.now(tz="UTC").tz_convert(MY_TZ)
+                            print(f"[dashboard] Warning: Invalid now_ts, using current time: {created_at}")
+                    except Exception as e:
+                        # Fallback to current time if timestamp conversion fails
+                        created_at = pd.Timestamp.now(tz="UTC").tz_convert(MY_TZ)
+                        print(f"[dashboard] Error converting now_ts: {e}, using current time: {created_at}")
+                    
                     expires_at = setup_levels.get("expires_at")
                     
                     # Ensure expires_at is timezone-aware and valid
@@ -1487,6 +1486,57 @@ def run_dashboard_analysis(asset: str, interval: str, days: int, model_type: str
                     # Debug: print timestamps to ensure they're valid
                     print(f"DEBUG: created_at={created_at}, expires_at={expires_at}")
                     
+                    # Get max pain data for consistency with auto alerts
+                    maxpain_info = {}
+                    try:
+                        from src.data.deribit_free import DeribitFreeProvider
+                        maxpain_provider = DeribitFreeProvider()
+                        cur = "BTC" if "BTC" in asset else ("ETH" if "ETH" in asset else "BTC")
+                        
+                        # Debug: Log currency detection
+                        print(f"[dashboard] MaxPain for {asset}: detected currency = {cur}")
+                        
+                        # Use basic max pain calculation (same as auto setups fallback)
+                        mp = maxpain_provider.calculate_max_pain(cur)
+                        if mp and isinstance(mp, dict) and mp.get('max_pain_strike'):
+                            S = float(mp.get('underlying_price', float('nan')))
+                            Kp = float(mp.get('max_pain_strike', float('nan')))
+                            if np.isfinite(S) and S > 0 and np.isfinite(Kp) and Kp > 0:
+                                dist_pct = abs(S - Kp) / S * 100.0
+                                toward_dir = "long" if S < Kp else "short"
+                                maxpain_info = {
+                                    "max_pain_currency": cur,
+                                    "max_pain_strike": Kp,
+                                    "max_pain_distance_pct": dist_pct,
+                                    "max_pain_toward": toward_dir,
+                                    "max_pain_weight": 1.0,
+                                }
+                                # Debug: Log MaxPain data
+                                print(f"[dashboard] MaxPain data for {asset}: strike={Kp:.0f}, underlying={S:.2f}, dist={dist_pct:.2f}%, toward={toward_dir}")
+                            else:
+                                print(f"[dashboard] MaxPain data invalid for {asset}: S={S}, Kp={Kp}")
+                        else:
+                            print(f"[dashboard] MaxPain not available for {asset}")
+                    except Exception as e:
+                        print(f"[dashboard] MaxPain error for {asset}: {e}")
+                        pass
+                    
+                    # Get sentiment data for consistency with auto setups
+                    sentiment_info = {}
+                    try:
+                        from src.data.real_sentiment import get_current_sentiment
+                        sentiment_data = get_current_sentiment()
+                        if sentiment_data:
+                            sentiment_info = {
+                                "sentiment_value": sentiment_data['value'],
+                                "sentiment_classification": sentiment_data['classification'],
+                                "sentiment_score": sentiment_data['sentiment_score'],
+                                "sentiment_weight": sentiment_data.get('sentiment_weight', 1.0)
+                            }
+                    except Exception as e:
+                        print(f"[dashboard] Failed to get sentiment data: {e}")
+                    
+                    # Create setup row with only SETUP_FIELDS to prevent CSV corruption
                     setup_row = {
                         "id": setup_id,
                         "asset": asset,
@@ -1508,34 +1558,86 @@ def run_dashboard_analysis(asset: str, interval: str, days: int, model_type: str
                         "entry_buffer_bps": float(st.session_state.get("entry_buffer_bps", 5.0)),
                         "origin": "manual",
                     }
+                    
+                    # Store extra data separately for alert generation (not in CSV)
+                    extra_data = {
+                        # Sentiment data for consistency with auto setups
+                        "sentiment_value": sentiment_info.get("sentiment_value", 50),
+                        "sentiment_classification": sentiment_info.get("sentiment_classification", "Neutral"),
+                        "sentiment_score": sentiment_info.get("sentiment_score", 0.0),
+                        "sentiment_weight": sentiment_info.get("sentiment_weight", 1.0),
+                        # Max pain data for consistency with auto setups
+                        "max_pain_currency": maxpain_info.get("max_pain_currency"),
+                        "max_pain_strike": maxpain_info.get("max_pain_strike"),
+                        "max_pain_distance_pct": maxpain_info.get("max_pain_distance_pct"),
+                        "max_pain_toward": maxpain_info.get("max_pain_toward"),
+                        "max_pain_weight": maxpain_info.get("max_pain_weight", 1.0),
+                    }
+                    # Debug: Log setup row before saving
+                    print(f"[dashboard] About to save setup row:")
+                    print(f"  ID: {setup_row.get('id')}")
+                    print(f"  Asset: {setup_row.get('asset')}")
+                    print(f"  Entry: {setup_row.get('entry')}")
+                    print(f"  Status: {setup_row.get('status')}")
+                    print(f"  Origin: {setup_row.get('origin')}")
+                    print(f"  Created: {setup_row.get('created_at')}")
+                    
                     _append_setup_row(setup_row)
                     st.success(f"Setup created and saved (ID: {setup_id}).")
 
+                    # Shadow stop logging (Phase-1, no behavior change)
+                    try:
+                        from src.trading.shadow_stops import compute_and_log_shadow_stop
+                        shadow_result = compute_and_log_shadow_stop(
+                            setup_id=setup_id,
+                            tf=interval,
+                            entry_price=float(setup_levels["entry"]),
+                            applied_stop_price=float(setup_levels["stop"]),
+                            rr_planned=float(setup_levels["rr"]),
+                            data=data,  # OHLCV data for ATR computation
+                            p_hit=None,  # Manual setups don't have model probability
+                            conf=float(latest_sig.get("confidence", 0.0)),
+                            outcome="pending"
+                        )
+                        print(f"[dashboard] shadow stop logged: valid={shadow_result.shadow_valid}, "
+                              f"dynamic_stop_R={shadow_result.dynamic_stop_candidate_R:.3f if shadow_result.dynamic_stop_candidate_R else 'N/A'}")
+                    except Exception as e:
+                        print(f"[dashboard] shadow stop logging error: {e}")
+
                     # Telegram alert (with visible status)
                     if st.session_state.get("tg_bot") and st.session_state.get("tg_chat"):
-                        # Get sentiment data for consistency with auto alerts
+                        # Get sentiment data from extra_data for consistency with auto alerts
                         sentiment_text = ""
                         try:
-                            from src.data.real_sentiment import get_current_sentiment
-                            sentiment_data = get_current_sentiment()
-                            if sentiment_data:
-                                sentiment_text = f"\nSentiment: {sentiment_data['value']} ({sentiment_data['classification']})\nWeight: {sentiment_data.get('sentiment_weight', 1.0):.2f}x"
+                            sentiment_value = extra_data.get('sentiment_value', 50)
+                            sentiment_class = extra_data.get('sentiment_classification', 'Neutral')
+                            sentiment_weight = extra_data.get('sentiment_weight', 1.0)
+                            sentiment_text = f"\nSentiment: {sentiment_value} ({sentiment_class})\nWeight: {sentiment_weight:.2f}x"
                         except Exception:
                             pass
                         
-                        # Get max pain data for consistency with auto alerts
+                        # Get max pain data from extra_data for consistency with auto alerts
                         maxpain_text = ""
                         try:
-                            from src.data.max_pain import get_max_pain_data
-                            maxpain_data = get_max_pain_data(asset)
-                            if maxpain_data and 'max_pain_strike' in maxpain_data:
-                                mp_strike = float(maxpain_data.get('max_pain_strike', float('nan')))
-                                mp_dist = float(maxpain_data.get('max_pain_distance_pct', float('nan')))
-                                mp_toward = str(maxpain_data.get('max_pain_toward', '')).upper()
-                                mp_weight = float(maxpain_data.get('max_pain_weight', 1.0))
+                            mp_strike = extra_data.get('max_pain_strike')
+                            mp_dist = extra_data.get('max_pain_distance_pct')
+                            mp_toward = extra_data.get('max_pain_toward')
+                            mp_weight = extra_data.get('max_pain_weight', 1.0)
+                            mp_currency = extra_data.get('max_pain_currency')
+                            
+                            # Debug: Log MaxPain data from extra_data
+                            print(f"[dashboard] Alert MaxPain for {asset}: currency={mp_currency}, strike={mp_strike}, dist={mp_dist}, toward={mp_toward}")
+                            
+                            if mp_strike is not None and mp_dist is not None and mp_toward is not None:
                                 if np.isfinite(mp_strike) and np.isfinite(mp_dist):
                                     maxpain_text = f"\nMaxPain: {mp_strike:.0f} ({mp_dist:.2f}%) toward {mp_toward}\nWeight: {mp_weight:.2f}x"
-                        except Exception:
+                                    print(f"[dashboard] Generated MaxPain text: {maxpain_text.strip()}")
+                                else:
+                                    print(f"[dashboard] MaxPain data invalid in extra_data: strike={mp_strike}, dist={mp_dist}")
+                            else:
+                                print(f"[dashboard] MaxPain data missing in extra_data: strike={mp_strike}, dist={mp_dist}, toward={mp_toward}")
+                        except Exception as e:
+                            print(f"[dashboard] MaxPain alert generation error: {e}")
                             pass
                         
                         msg = (
@@ -1549,7 +1651,9 @@ def run_dashboard_analysis(asset: str, interval: str, days: int, model_type: str
                             f"Created at: {setup_row['created_at']}\n"
                             f"Valid until: {setup_row['expires_at']}"
                         )
-                        ok = send_telegram(st.session_state["tg_bot"], st.session_state["tg_chat"], msg)
+                        # Use the same telegram function as auto setups for consistency
+                        from src.daemon.autosignal import _send_telegram
+                        ok = _send_telegram(msg)
                         if ok:
                             st.info("Telegram alert sent for new setup.")
                         else:
@@ -1622,7 +1726,7 @@ def display_analysis_results(data, feature_df, signals, model_summary, asset, in
 
     # Signals Tab
     with tab2:
-        display_signals_analysis(signals, config)
+        display_signals_analysis(signals, config, interval)
 
     # Model Performance Tab
     with tab3:
@@ -1702,7 +1806,7 @@ def display_price_chart(data, asset, interval):
 
 
 
-def display_signals_analysis(signals, config):
+def display_signals_analysis(signals, config, interval):
     """Display signals analysis with trade plan"""
     st.subheader("🎯 Trading Signals")
 
@@ -3560,7 +3664,7 @@ def _append_trade_row(trade_row):
     write_header = not os.path.exists(trade_file)
     
     with open(trade_file, "a", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=TRADE_FIELDS, extrasaction="ignore", quoting=csv.QUOTE_MINIMAL)
+        w = csv.DictWriter(f, fieldnames=TRADE_FIELDS, extrasaction="ignore", quoting=csv.QUOTE_ALL)
         if write_header:
             w.writeheader()
         w.writerow(safe_row)
