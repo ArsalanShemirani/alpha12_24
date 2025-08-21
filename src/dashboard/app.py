@@ -1307,21 +1307,22 @@ def run_dashboard_analysis(asset: str, interval: str, days: int, model_type: str
                             nominal_based_size_units = target_nominal_position / entry_px
                             nominal_based_notional = nominal_based_size_units * entry_px
                             
-                            # Use risk-based sizing to maintain consistent dollar risk across timeframes
-                            # This ensures the same actual dollar loss ($10) regardless of timeframe
-                            size_units = risk_based_size_units
-                            notional = risk_based_notional
+                            # Use timeframe-specific target notional amounts
+                            def get_timeframe_notional(tf):
+                                timeframe_notional = {
+                                    "15m": 2000.0,
+                                    "1h": 1000.0,
+                                    "4h": 667.0,
+                                    "1d": 500.0
+                                }
+                                return timeframe_notional.get(tf, 1000.0)
                             
-                            # Cap by maximum leverage
-                            notional_cap = balance * max_lev
-                            if notional_cap > 0 and notional > notional_cap:
-                                scale = notional_cap / (notional + 1e-9)
-                                size_units *= scale
-                                notional = size_units * entry_px
+                            target_notional = get_timeframe_notional(interval)
+                            size_units = target_notional / entry_px
+                            notional = size_units * entry_px
                             
-                            # Calculate suggested leverage (show max leverage for UI display)
-                            # The actual position uses 25% of nominal balance for risk management
-                            suggested_leverage = max_lev
+                            # Always use maximum leverage for display (10x)
+                            suggested_leverage = float(max_lev)
                     except Exception:
                         size_units = 0.0
                         notional = 0.0
@@ -1348,9 +1349,9 @@ def run_dashboard_analysis(asset: str, interval: str, days: int, model_type: str
                     except Exception as e:
                         st.warning(f"Adaptive confidence gate failed: {e}, using fallback")
                         # Fallback to original method
-                        if float(latest_sig.get("confidence", 0.0)) < float(st.session_state.get("min_conf_arm", 0.60)):
-                            st.info("Setup blocked: confidence below arm threshold (fallback).")
-                            return
+                    if float(latest_sig.get("confidence", 0.0)) < float(st.session_state.get("min_conf_arm", 0.60)):
+                        st.info("Setup blocked: confidence below arm threshold (fallback).")
+                        return
 
                     # 5.2 Macro regime gate (MA50/MA200)
                     if st.session_state.get("gate_regime", True):
@@ -1479,9 +1480,9 @@ def run_dashboard_analysis(asset: str, interval: str, days: int, model_type: str
                             expires_at = created_at + pd.Timedelta(minutes=valid_bars * per_bar_min)
                     else:
                         # Create expires_at from created_at if not available
-                        valid_bars = int(st.session_state.get("valid_bars", 24))
-                        per_bar_min = {"5m":5, "15m":15, "1h":60, "4h":240, "1d":1440}.get(interval, 60)
-                        expires_at = created_at + pd.Timedelta(minutes=valid_bars * per_bar_min)
+                            valid_bars = int(st.session_state.get("valid_bars", 24))
+                            per_bar_min = {"5m":5, "15m":15, "1h":60, "4h":240, "1d":1440}.get(interval, 60)
+                            expires_at = created_at + pd.Timedelta(minutes=valid_bars * per_bar_min)
                     
                     # Debug: print timestamps to ensure they're valid
                     print(f"DEBUG: created_at={created_at}, expires_at={expires_at}")
@@ -1805,15 +1806,22 @@ def display_signals_analysis(signals, config):
                     size_units = nominal_based_size_units
                     notional = nominal_based_notional
 
-            # Cap by leverage limit
-                notional_cap = balance * max_lev
-            if notional > notional_cap and notional_cap > 0:
-                scale = notional_cap / (notional + 1e-9)
-                size_units *= scale
-                notional = size_units * entry
+            # Use timeframe-specific target notional amounts
+            def get_timeframe_notional(tf):
+                timeframe_notional = {
+                    "15m": 2000.0,
+                    "1h": 1000.0,
+                    "4h": 667.0,
+                    "1d": 500.0
+                }
+                return timeframe_notional.get(tf, 1000.0)
+            
+            target_notional = get_timeframe_notional(interval)
+            size_units = target_notional / entry
+            notional = size_units * entry
 
-            # Suggested leverage = min(max_lev, notional / balance)
-            suggested_leverage = min(max_lev, max(notional / (balance + 1e-9), 1.0))
+            # Always use maximum leverage for display (10x)
+            suggested_leverage = float(max_lev)
 
             rr = min_rr
             conf = latest['confidence']
@@ -2344,10 +2352,10 @@ def display_setups_monitor(asset: str, interval: str, data: pd.DataFrame):
             # Handle empty strings and NaN values
             setups[c] = setups[c].replace(['', 'nan', 'None', 'null'], pd.NaT)
             ts = pd.to_datetime(setups[c], errors="coerce", utc=True)
-            try:
-                setups[c] = ts.dt.tz_convert(MY_TZ)
-            except Exception:
-                setups[c] = ts
+        try:
+            setups[c] = ts.dt.tz_convert(MY_TZ)
+        except Exception:
+            setups[c] = ts
 
     # Filter by current asset/interval (UI context)
     df_view = setups.copy()
@@ -2772,7 +2780,7 @@ def display_account_tab():
             st.metric("Execution Efficiency", f"{efficiency:.1f}%")
         else:
             st.metric("Execution Efficiency", "N/A")
-    
+
     st.markdown("---")
     # --- Equity curve from completed trades, if available ---
     if not df_th.empty and not df_su.empty:
@@ -3144,7 +3152,7 @@ def execute_selected_trades_internal(executions, setups_df, config):
         leverage = trade_data['leverage']
         setup = trade_data['setup_data']
         
-        # Calculate position size based on risk
+        # Calculate position size based on risk (original logic)
         entry_price = float(setup['entry'])
         stop_price = float(setup['stop'])
         risk_per_unit = abs(entry_price - stop_price)

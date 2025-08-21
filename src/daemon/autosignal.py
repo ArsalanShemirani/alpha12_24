@@ -41,6 +41,14 @@ try:
 except ImportError:
     XGBOOST_AVAILABLE = False
 
+# Import adaptive confidence gate
+try:
+    from src.trading.adaptive_confidence_gate import adaptive_confidence_gate
+    ADAPTIVE_CONFIDENCE_AVAILABLE = True
+except ImportError:
+    ADAPTIVE_CONFIDENCE_AVAILABLE = False
+    print("[autosignal] Adaptive confidence gate not available, using fallback")
+
 MODEL_DIR = getattr(config, 'model_dir', 'artifacts')
 
 def _load_latest_predictor(asset: str, interval: str):
@@ -542,61 +550,88 @@ def _get_timeframe_stop_multiplier(interval: str) -> float:
     }
     return multipliers.get(interval, 1.0)
 
+def _get_timeframe_notional(interval: str) -> float:
+    """
+    Get timeframe-specific notional position size.
+    
+    Returns the target notional position size for each timeframe:
+    - 15m: $2,000 notional
+    - 1h: $1,000 notional  
+    - 4h: $667 notional
+    - 1d: $500 notional
+    """
+    timeframe_notional = {
+        "15m": 2000.0,
+        "1h": 1000.0,
+        "4h": 667.0,
+        "1d": 500.0
+    }
+    return timeframe_notional.get(interval, 1000.0)  # Default to 1h if unknown
+
+def _get_timeframe_risk_percentage(interval: str) -> float:
+    """
+    Get timeframe-specific risk percentage.
+    
+    Returns the risk percentage for each timeframe:
+    - 15m: 0.5%
+    - 1h: 1.0%
+    - 4h: 1.5%
+    - 1d: 2.0%
+    """
+    timeframe_risk = {
+        "15m": 0.5,
+        "1h": 1.0,
+        "4h": 1.5,
+        "1d": 2.0
+    }
+    return timeframe_risk.get(interval, 1.0)  # Default to 1h if unknown
+
 def _size_position(entry_px: float, stop_px: float, balance: float, max_lev: int, risk_pct: float, 
                   interval: str = "1h", nominal_position_pct: float = 25.0) -> Tuple[float, float, float]:
     """
     Return (size_units, notional_usd, suggested_leverage).
     
-    Implements timeframe-specific risk management:
-    - 1% risk per trade (constant across timeframes)
-    - 25% nominal position size (of leveraged account)
-    - Stop loss distance scales with timeframe volatility
-    - Position size adjusts to maintain constant dollar risk
+    Implements timeframe-specific position sizing with target notional amounts:
+    - 15m: $2,000 notional, 0.5% risk, $10 dollar risk, 10x display leverage
+    - 1h: $1,000 notional, 1.0% risk, $10 dollar risk, 10x display leverage  
+    - 4h: $667 notional, 1.5% risk, $10 dollar risk, 10x display leverage
+    - 1d: $500 notional, 2.0% risk, $10 dollar risk, 10x display leverage
+    
+    Position size calculated to achieve target notional, which gives correct risk %.
     """
-    # Calculate nominal account value (balance * max leverage)
-    nominal_balance = balance * max_lev
+    # Get timeframe-specific target notional
+    target_notional = _get_timeframe_notional(interval)
     
-    # Calculate target nominal position size (25% of nominal balance)
-    target_nominal_position = nominal_balance * (nominal_position_pct / 100.0)
+    # Calculate position size to achieve target notional
+    size_units = target_notional / entry_px
     
-    # Calculate risk amount (1% of actual balance)
-    risk_frac = max(risk_pct / 100.0, 0.0)
-    risk_amt = balance * risk_frac
+    # Calculate actual notional
+    notional = size_units * entry_px
     
-    # Calculate stop distance
+    # Calculate actual dollar risk and risk percentage
     stop_dist = abs(entry_px - stop_px)
-    if stop_dist <= 0 or balance <= 0:
-        return 0.0, 0.0, 1.0
-    
-    # Calculate position size based on risk (this ensures 1% risk)
-    risk_based_size_units = risk_amt / stop_dist
-    risk_based_notional = risk_based_size_units * entry_px
-    
-    # Calculate position size based on nominal target (25% of nominal balance)
-    nominal_based_size_units = target_nominal_position / entry_px
-    nominal_based_notional = nominal_based_size_units * entry_px
-    
-    # Use the smaller of the two to ensure we don't exceed risk limits
-    if risk_based_notional <= nominal_based_notional:
-        # Risk-based sizing is more restrictive
-        size_units = risk_based_size_units
-        notional = risk_based_notional
+    if stop_dist > 0:
+        actual_dollar_risk = size_units * stop_dist
+        actual_risk_pct = (actual_dollar_risk / balance) * 100.0
     else:
-        # Nominal-based sizing is more restrictive
-        size_units = nominal_based_size_units
-        notional = nominal_based_notional
+        actual_dollar_risk = 0.0
+        actual_risk_pct = 0.0
     
-    # Cap by maximum leverage
-    notional_cap = balance * max_lev
-    if notional_cap > 0 and notional > notional_cap:
-        scale = notional_cap / (notional + 1e-9)
-        size_units *= scale
-        notional = size_units * entry_px
+    # Get timeframe-specific risk percentage for reference
+    timeframe_risk_pct = _get_timeframe_risk_percentage(interval)
     
-    # Calculate suggested leverage
-    suggested_leverage = min(max_lev, max(notional / balance, 1.0))
+    print(f"[autosignal] {interval} position sizing:")
+    print(f"  Target notional: ${target_notional:,.0f}")
+    print(f"  Actual notional: ${notional:,.0f}")
+    print(f"  Target risk: {timeframe_risk_pct}%")
+    print(f"  Actual risk: {actual_risk_pct:.2f}%")
+    print(f"  Dollar risk: ${actual_dollar_risk:.2f}")
+    print(f"  Display leverage: {max_lev}x")
     
-    return float(size_units), float(notional), float(suggested_leverage)
+    # Always return maximum leverage for display (10x)
+    suggested_leverage = float(max_lev)
+    
+    return float(size_units), float(notional), suggested_leverage
 
 
 def _daily_cap_reached(asset: str, interval: str, cap: int) -> bool:
@@ -700,10 +735,24 @@ def autosignal_once(assets: List[str], interval: str, days: int = 120) -> None:
         rr25_thresh = ui_config.get("rr25_thresh", RR25_THRESH)
         max_setups_per_day = ui_config.get("max_setups_per_day", MAX_SETUPS_PER_DAY)
 
-        # Arm confidence
-        if conf < min_conf_arm:
-            print(f"[autosignal] Skip {sym}-{iv}: confidence {conf:.3f} < {min_conf_arm:.3f}")
-            continue
+        # Adaptive confidence gate (replaces old min_conf_arm check)
+        if ADAPTIVE_CONFIDENCE_AVAILABLE:
+            try:
+                confidence_result = adaptive_confidence_gate.evaluate_confidence(iv, conf)
+                if not confidence_result.passed:
+                    print(f"[autosignal] Skip {sym}-{iv}: adaptive confidence gate failed - confidence {conf:.3f} < threshold {confidence_result.effective_threshold:.3f}")
+                    continue
+                print(f"[autosignal] {sym}-{iv}: adaptive confidence gate passed - confidence {conf:.3f} >= threshold {confidence_result.effective_threshold:.3f}")
+            except Exception as e:
+                print(f"[autosignal] {sym}-{iv}: adaptive confidence gate error {e}, falling back to min_conf_arm")
+                if conf < min_conf_arm:
+                    print(f"[autosignal] Skip {sym}-{iv}: confidence {conf:.3f} < {min_conf_arm:.3f}")
+                    continue
+        else:
+            # Fallback to old confidence check
+            if conf < min_conf_arm:
+                print(f"[autosignal] Skip {sym}-{iv}: confidence {conf:.3f} < {min_conf_arm:.3f}")
+                continue
 
         # Sentiment weighting (direction-specific)
         sentiment_weight = 1.0  # Default weight
