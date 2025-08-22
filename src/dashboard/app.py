@@ -2001,10 +2001,22 @@ def display_signals_analysis(signals, config, interval):
         st.metric("Flat Signals", signal_counts.get('flat', 0))
 
     with col3:
-        avg_confidence = signals_df['confidence'].mean()
+        # Convert confidence to numeric before calculating mean
+        confidence_numeric = pd.to_numeric(signals_df['confidence'], errors='coerce')
+        avg_confidence = confidence_numeric.mean()
         # Convert numpy array to float if needed
         avg_confidence_val = float(avg_confidence[0]) if hasattr(avg_confidence, '__iter__') else float(avg_confidence)
-        st.metric("Avg Confidence", f"{avg_confidence_val:.1%}")
+        # Handle confidence values that might be strings or numbers
+        try:
+            if pd.isna(avg_confidence_val):
+                confidence_str = "N/A"
+            elif isinstance(avg_confidence_val, str):
+                confidence_str = f"{float(avg_confidence_val):.1%}"
+            else:
+                confidence_str = f"{avg_confidence_val:.1%}"
+        except (ValueError, TypeError):
+            confidence_str = str(avg_confidence_val) if avg_confidence_val is not None else "N/A"
+        st.metric("Avg Confidence", confidence_str)
 
     # Signal timeline
     if 'timestamp' in signals_df.columns:
@@ -2110,7 +2122,17 @@ def display_signals_analysis(signals, config, interval):
             colD.metric("Est. RR", f"{float(rr):.2f}")
 
             # Confidence
-            st.metric("Confidence", f"{float(conf):.0%}")
+            # Handle confidence values that might be strings or numbers
+            try:
+                if pd.isna(conf):
+                    confidence_str = "N/A"
+                elif isinstance(conf, str):
+                    confidence_str = f"{float(conf):.0%}"
+                else:
+                    confidence_str = f"{float(conf):.0%}"
+            except (ValueError, TypeError):
+                confidence_str = str(conf) if conf is not None else "N/A"
+            st.metric("Confidence", confidence_str)
 
 
 def display_model_performance(model_summary):
@@ -2375,15 +2397,31 @@ def display_backtest_interface(asset, interval, source_choice, model_summary, co
                 with col3:
                     st.metric("System Win Rate", f"{system_win_rate:.1%}")
                 with col4:
-                    avg_confidence = setups_df['confidence'].mean()
-                    st.metric("Avg Confidence", f"{avg_confidence:.1%}")
+                    # Convert confidence to numeric before calculating mean
+                    confidence_numeric = pd.to_numeric(setups_df['confidence'], errors='coerce')
+                    avg_confidence = confidence_numeric.mean()
+                    # Handle confidence values that might be strings or numbers
+                    try:
+                        if pd.isna(avg_confidence):
+                            confidence_str = "N/A"
+                        elif isinstance(avg_confidence, str):
+                            confidence_str = f"{float(avg_confidence):.1%}"
+                        else:
+                            confidence_str = f"{avg_confidence:.1%}"
+                    except (ValueError, TypeError):
+                        confidence_str = str(avg_confidence) if avg_confidence is not None else "N/A"
+                    st.metric("Avg Confidence", confidence_str)
                 
                 # Performance by asset
                 if len(setups_df) > 1:
                     st.subheader("Performance by Asset")
-                    asset_performance = setups_df.groupby('asset').agg({
+                    # Convert confidence to numeric before aggregation
+                    setups_df_copy = setups_df.copy()
+                    setups_df_copy['confidence_numeric'] = pd.to_numeric(setups_df_copy['confidence'], errors='coerce')
+                    
+                    asset_performance = setups_df_copy.groupby('asset').agg({
                         'status': lambda x: (x == 'target').sum() / (x.isin(['target', 'stop', 'timeout'])).sum() if (x.isin(['target', 'stop', 'timeout'])).sum() > 0 else 0,
-                        'confidence': 'mean'
+                        'confidence_numeric': 'mean'
                     }).round(3)
                     
                     asset_performance.columns = ['Win Rate', 'Avg Confidence']
@@ -2391,9 +2429,9 @@ def display_backtest_interface(asset, interval, source_choice, model_summary, co
                 
                 # Performance by direction
                 st.subheader("Performance by Direction")
-                direction_performance = setups_df.groupby('direction').agg({
+                direction_performance = setups_df_copy.groupby('direction').agg({
                     'status': lambda x: (x == 'target').sum() / (x.isin(['target', 'stop', 'timeout'])).sum() if (x.isin(['target', 'stop', 'timeout'])).sum() > 0 else 0,
-                    'confidence': 'mean'
+                    'confidence_numeric': 'mean'
                 }).round(3)
                 
                 direction_performance.columns = ['Win Rate', 'Avg Confidence']
@@ -2448,17 +2486,28 @@ def display_backtest_interface(asset, interval, source_choice, model_summary, co
                             if analysis_type == "Both":
                                 st.subheader("🔄 System vs Executed Performance Comparison")
                                 
+                                # Handle confidence values that might be strings or numbers
+                                def format_confidence_safe4(x):
+                                    if pd.isna(x):
+                                        return "N/A"
+                                    try:
+                                        if isinstance(x, str):
+                                            x = float(x)
+                                        return f"{x:.1%}"
+                                    except (ValueError, TypeError):
+                                        return str(x) if x is not None else "N/A"
+                                
                                 comparison_data = {
                                     'Metric': ['Win Rate', 'Total Trades', 'Avg Confidence'],
                                     'System (All Setups)': [
                                         f"{system_win_rate:.1%}",
                                         len(completed_setups),
-                                        f"{avg_confidence:.1%}"
+                                        format_confidence_safe4(avg_confidence)
                                     ],
                                     'Executed Trades': [
                                         f"{executed_win_rate:.1%}",
                                         total_trades,
-                                        f"{trades_df['confidence'].mean():.1%}" if not trades_df.empty else "N/A"
+                                        format_confidence_safe4(pd.to_numeric(trades_df['confidence'], errors='coerce').mean()) if not trades_df.empty else "N/A"
                                     ]
                                 }
                                 
@@ -3382,7 +3431,18 @@ def display_trade_execution_interface(asset, interval, config):
                     
                 with col2:
                     st.write(f"**{setup['asset']} {setup['direction'].upper()}**")
-                    st.write(f"Confidence: {setup['confidence']:.2%}")
+                    # Handle confidence values that might be strings or numbers
+                    try:
+                        confidence_val = setup['confidence']
+                        if pd.isna(confidence_val):
+                            confidence_str = "N/A"
+                        elif isinstance(confidence_val, str):
+                            confidence_str = f"{float(confidence_val):.2%}"
+                        else:
+                            confidence_str = f"{confidence_val:.2%}"
+                    except (ValueError, TypeError):
+                        confidence_str = str(setup['confidence']) if setup['confidence'] is not None else "N/A"
+                    st.write(f"Confidence: {confidence_str}")
                     
                 with col3:
                     st.write(f"Entry: ${setup['entry']:,.2f}")
@@ -3402,7 +3462,7 @@ def display_trade_execution_interface(asset, interval, config):
                         risk_amount = st.number_input(
                             "Risk ($)", 
                             min_value=1.0, 
-                            max_value=10000.0, 
+                            max_value=100000.0, 
                             value=default_risk, 
                             step=10.0,
                             key=f"risk_{setup_id}"
@@ -3493,8 +3553,31 @@ def display_trade_execution_interface(asset, interval, config):
     
     # Format for display
     display_df = setups_df.copy()
-    display_df['confidence'] = display_df['confidence'].apply(lambda x: f"{x:.1%}" if pd.notna(x) else "N/A")
-    display_df['rr'] = display_df['rr'].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "N/A")
+    # Handle confidence values that might be strings or numbers
+    def format_confidence(x):
+        if pd.isna(x):
+            return "N/A"
+        try:
+            # Convert to float if it's a string, then format as percentage
+            if isinstance(x, str):
+                x = float(x)
+            return f"{x:.1%}"
+        except (ValueError, TypeError):
+            return str(x) if x is not None else "N/A"
+    
+    def format_rr(x):
+        if pd.isna(x):
+            return "N/A"
+        try:
+            # Convert to float if it's a string, then format
+            if isinstance(x, str):
+                x = float(x)
+            return f"{x:.1f}"
+        except (ValueError, TypeError):
+            return str(x) if x is not None else "N/A"
+    
+    display_df['confidence'] = display_df['confidence'].apply(format_confidence)
+    display_df['rr'] = display_df['rr'].apply(format_rr)
     
     # Select columns to display
     display_columns = ['id', 'asset', 'direction', 'status', 'confidence', 'rr', 'created_at']
@@ -3505,9 +3588,13 @@ def display_trade_execution_interface(asset, interval, config):
     
     # Performance by asset
     if len(setups_df) > 0:
-        asset_performance = setups_df.groupby('asset').agg({
+        # Convert confidence to numeric before aggregation
+        setups_df_copy = setups_df.copy()
+        setups_df_copy['confidence_numeric'] = pd.to_numeric(setups_df_copy['confidence'], errors='coerce')
+        
+        asset_performance = setups_df_copy.groupby('asset').agg({
             'status': lambda x: (x == 'target').sum() / (x.isin(['target', 'stop', 'timeout'])).sum() if (x.isin(['target', 'stop', 'timeout'])).sum() > 0 else 0,
-            'confidence': 'mean'
+            'confidence_numeric': 'mean'
         }).round(3)
         
         asset_performance.columns = ['Win Rate', 'Avg Confidence']
@@ -3515,9 +3602,9 @@ def display_trade_execution_interface(asset, interval, config):
         st.dataframe(asset_performance)
         
         # Performance by direction
-        direction_performance = setups_df.groupby('direction').agg({
+        direction_performance = setups_df_copy.groupby('direction').agg({
             'status': lambda x: (x == 'target').sum() / (x.isin(['target', 'stop', 'timeout'])).sum() if (x.isin(['target', 'stop', 'timeout'])).sum() > 0 else 0,
-            'confidence': 'mean'
+            'confidence_numeric': 'mean'
         }).round(3)
         
         direction_performance.columns = ['Win Rate', 'Avg Confidence']
@@ -3626,12 +3713,29 @@ def execute_selected_trades_internal(executions, setups_df, config):
         # Update setup with execution details
         setup_idx = setups_df[setups_df['id'] == setup_id].index
         if len(setup_idx) > 0:
-            setups_df.loc[setup_idx[0], 'status'] = 'executed'
-            setups_df.loc[setup_idx[0], 'size_units'] = position_size
-            setups_df.loc[setup_idx[0], 'notional_usd'] = notional_value
-            setups_df.loc[setup_idx[0], 'leverage'] = leverage
-            setups_df.loc[setup_idx[0], 'executed_at'] = datetime.now()
-            setups_df.loc[setup_idx[0], 'risk_amount'] = risk_amount
+            idx = setup_idx[0]
+            setups_df.loc[idx, 'status'] = 'executed'
+            setups_df.loc[idx, 'size_units'] = position_size
+            setups_df.loc[idx, 'notional_usd'] = notional_value
+            setups_df.loc[idx, 'leverage'] = leverage
+            setups_df.loc[idx, 'executed_at'] = datetime.now()
+            setups_df.loc[idx, 'risk_amount'] = risk_amount
+            setups_df.loc[idx, 'origin'] = 'manual'  # Ensure origin is set
+            
+            # Generate unique_id if missing
+            if pd.isna(setups_df.loc[idx, 'unique_id']) or str(setups_df.loc[idx, 'unique_id']).strip() == '':
+                unique_id = _generate_unique_id(setups_df.loc[idx, 'asset'], setups_df.loc[idx, 'interval'], 
+                                              setups_df.loc[idx, 'direction'])
+                setups_df.loc[idx, 'unique_id'] = unique_id
+            
+            # Send Telegram notification for execution
+            if st.session_state.get("tg_bot") and st.session_state.get("tg_chat"):
+                try:
+                    unique_id = setups_df.loc[idx, 'unique_id']
+                    message = f"🚀 Setup EXECUTED\nSetup ID: {unique_id}\n{setups_df.loc[idx, 'asset']} {setups_df.loc[idx, 'interval']} ({setups_df.loc[idx, 'direction'].upper()})\nEntry: ${setups_df.loc[idx, 'entry']:.4f}\nStop: ${setups_df.loc[idx, 'stop']:.4f} | Target: ${setups_df.loc[idx, 'target']:.4f}\nRisk: ${risk_amount:.2f} | Leverage: {leverage}x\nSize: {position_size:.6f} | Notional: ${notional_value:.2f}\nTime: {datetime.now().strftime('%Y-%m-%d %H:%M MY')}"
+                    st.session_state["tg_bot"].send_message(st.session_state["tg_chat"], message)
+                except Exception as e:
+                    st.error(f"Failed to send Telegram notification: {e}")
             
             executed_count += 1
     
@@ -3684,12 +3788,24 @@ def cancel_selected_setups_internal(cancellations, setups_df):
             
             # Send Telegram notification
             if st.session_state.get("tg_bot") and st.session_state.get("tg_chat"):
+                # Handle confidence values that might be strings or numbers
+                try:
+                    confidence_val = setup_data['confidence']
+                    if pd.isna(confidence_val):
+                        confidence_str = "N/A"
+                    elif isinstance(confidence_val, str):
+                        confidence_str = f"{float(confidence_val):.1%}"
+                    else:
+                        confidence_str = f"{confidence_val:.1%}"
+                except (ValueError, TypeError):
+                    confidence_str = str(setup_data['confidence']) if setup_data['confidence'] is not None else "N/A"
+                
                 msg = (
                     f"Setup CANCELLED {setup_data['asset']} {setup_data['interval']} ({setup_data['direction'].upper()})\n"
                     f"Entry: {setup_data['entry']:.2f}\n"
                     f"Stop: {setup_data['stop']:.2f}\n"
                     f"Target: {setup_data['target']:.2f}\n"
-                    f"Confidence: {setup_data['confidence']:.1%}\n"
+                    f"Confidence: {confidence_str}\n"
                     f"Cancelled at: {pd.Timestamp.now(tz='Asia/Kuala_Lumpur').strftime('%Y-%m-%d %H:%M:%S')}"
                 )
                 send_telegram(st.session_state["tg_bot"], st.session_state["tg_chat"], msg)
@@ -3819,7 +3935,17 @@ def display_trade_history_interface(asset, interval, config):
                 # Format the dataframe for display
                 display_df = executed_trades.copy()
                 display_df['pnl_pct'] = display_df['pnl_pct'].apply(lambda x: f"{x:.2f}%")
-                display_df['confidence'] = display_df['confidence'].apply(lambda x: f"{x:.1%}")
+                # Handle confidence values that might be strings or numbers
+                def format_confidence_safe(x):
+                    if pd.isna(x):
+                        return "N/A"
+                    try:
+                        if isinstance(x, str):
+                            x = float(x)
+                        return f"{x:.1%}"
+                    except (ValueError, TypeError):
+                        return str(x) if x is not None else "N/A"
+                display_df['confidence'] = display_df['confidence'].apply(format_confidence_safe)
                 
                 # Add execution type column
                 display_df['execution_type'] = 'Executed'
@@ -3865,8 +3991,20 @@ def display_trade_history_interface(asset, interval, config):
                     st.metric("System Win Rate", f"{system_win_rate:.1%}")
                     st.caption(f"Wins: {winning_setups}/{len(completed_setups)}")
                 with col4:
-                    avg_confidence = setups_df_filtered['confidence'].mean()
-                    st.metric("Avg Confidence", f"{avg_confidence:.1%}")
+                    # Convert confidence to numeric before calculating mean
+                    confidence_numeric = pd.to_numeric(setups_df_filtered['confidence'], errors='coerce')
+                    avg_confidence = confidence_numeric.mean()
+                    # Handle confidence values that might be strings or numbers
+                    try:
+                        if pd.isna(avg_confidence):
+                            confidence_str = "N/A"
+                        elif isinstance(avg_confidence, str):
+                            confidence_str = f"{float(avg_confidence):.1%}"
+                        else:
+                            confidence_str = f"{avg_confidence:.1%}"
+                    except (ValueError, TypeError):
+                        confidence_str = str(avg_confidence) if avg_confidence is not None else "N/A"
+                    st.metric("Avg Confidence", confidence_str)
                     st.caption("All setups")
                 
                 # Status breakdown
@@ -3888,8 +4026,29 @@ def display_trade_history_interface(asset, interval, config):
                 
                 # Format for display
                 display_df = setups_df_filtered.copy()
-                display_df['confidence'] = display_df['confidence'].apply(lambda x: f"{x:.1%}" if pd.notna(x) else "N/A")
-                display_df['rr'] = display_df['rr'].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "N/A")
+                # Handle confidence values that might be strings or numbers
+                def format_confidence_safe2(x):
+                    if pd.isna(x):
+                        return "N/A"
+                    try:
+                        if isinstance(x, str):
+                            x = float(x)
+                        return f"{x:.1%}"
+                    except (ValueError, TypeError):
+                        return str(x) if x is not None else "N/A"
+                
+                def format_rr_safe(x):
+                    if pd.isna(x):
+                        return "N/A"
+                    try:
+                        if isinstance(x, str):
+                            x = float(x)
+                        return f"{x:.1f}"
+                    except (ValueError, TypeError):
+                        return str(x) if x is not None else "N/A"
+                
+                display_df['confidence'] = display_df['confidence'].apply(format_confidence_safe2)
+                display_df['rr'] = display_df['rr'].apply(format_rr_safe)
                 
                 # Add execution type column
                 display_df['execution_type'] = display_df['status'].apply(lambda x: 
@@ -3919,9 +4078,13 @@ def display_trade_history_interface(asset, interval, config):
             else:
                 # Performance by asset
                 st.write("**Performance by Asset:**")
-                asset_performance = setups_df.groupby('asset').agg({
+                # Convert confidence to numeric before aggregation
+                setups_df_copy = setups_df.copy()
+                setups_df_copy['confidence_numeric'] = pd.to_numeric(setups_df_copy['confidence'], errors='coerce')
+                
+                asset_performance = setups_df_copy.groupby('asset').agg({
                     'status': lambda x: (x == 'target').sum() / (x.isin(['target', 'stop', 'timeout'])).sum() if (x.isin(['target', 'stop', 'timeout'])).sum() > 0 else 0,
-                    'confidence': 'mean'
+                    'confidence_numeric': 'mean'
                 }).round(3)
                 
                 asset_performance.columns = ['Win Rate', 'Avg Confidence']
@@ -3929,9 +4092,9 @@ def display_trade_history_interface(asset, interval, config):
                 
                 # Performance by direction
                 st.write("**Performance by Direction:**")
-                direction_performance = setups_df.groupby('direction').agg({
+                direction_performance = setups_df_copy.groupby('direction').agg({
                     'status': lambda x: (x == 'target').sum() / (x.isin(['target', 'stop', 'timeout'])).sum() if (x.isin(['target', 'stop', 'timeout'])).sum() > 0 else 0,
-                    'confidence': 'mean'
+                    'confidence_numeric': 'mean'
                 }).round(3)
                 
                 direction_performance.columns = ['Win Rate', 'Avg Confidence']
@@ -4067,7 +4230,18 @@ def show_trade_details(trade):
         st.write(f"Notional Value: ${trade['notional_usd']:,.2f}")
         st.write(f"Leverage: {trade.get('leverage', 1.0)}x")
         st.write(f"Risk Amount: ${trade.get('risk_amount', 0):,.2f}")
-        st.write(f"Confidence: {trade['confidence']:.1%}")
+        # Handle confidence values that might be strings or numbers
+        try:
+            confidence_val = trade['confidence']
+            if pd.isna(confidence_val):
+                confidence_str = "N/A"
+            elif isinstance(confidence_val, str):
+                confidence_str = f"{float(confidence_val):.1%}"
+            else:
+                confidence_str = f"{confidence_val:.1%}"
+        except (ValueError, TypeError):
+            confidence_str = str(trade['confidence']) if trade['confidence'] is not None else "N/A"
+        st.write(f"Confidence: {confidence_str}")
     
     # Calculate current P&L if trade is active
     if trade['status'] == 'executed':
@@ -4198,16 +4372,30 @@ def display_created_at_interface(asset, interval, config):
     filtered_setups = filtered_setups[pd.notna(filtered_setups['date'])]
     
     # Group by date and show summary
-    daily_summary = filtered_setups.groupby('date').agg({
+    # Convert confidence to numeric before aggregation
+    filtered_setups_copy = filtered_setups.copy()
+    filtered_setups_copy['confidence_numeric'] = pd.to_numeric(filtered_setups_copy['confidence'], errors='coerce')
+    
+    daily_summary = filtered_setups_copy.groupby('date').agg({
         'id': 'count',
         'status': lambda x: (x == 'target').sum(),
-        'confidence': 'mean'
+        'confidence_numeric': 'mean'
     }).round(3)
     
     daily_summary.columns = ['Total Setups', 'Wins', 'Avg Confidence']
     daily_summary['Win Rate'] = (daily_summary['Wins'] / daily_summary['Total Setups'] * 100).round(1)
     daily_summary['Win Rate'] = daily_summary['Win Rate'].apply(lambda x: f"{x:.1f}%")
-    daily_summary['Avg Confidence'] = daily_summary['Avg Confidence'].apply(lambda x: f"{x:.1%}")
+    # Handle confidence values that might be strings or numbers
+    def format_confidence_safe3(x):
+        if pd.isna(x):
+            return "N/A"
+        try:
+            if isinstance(x, str):
+                x = float(x)
+            return f"{x:.1%}"
+        except (ValueError, TypeError):
+            return str(x) if x is not None else "N/A"
+    daily_summary['Avg Confidence'] = daily_summary['Avg Confidence'].apply(format_confidence_safe3)
     
     st.dataframe(daily_summary, use_container_width=True)
     
@@ -4237,8 +4425,20 @@ def display_created_at_interface(asset, interval, config):
             win_rate = wins / len(daily_setups) if len(daily_setups) > 0 else 0
             st.metric("Win Rate", f"{win_rate:.1%}")
         with col3:
-            avg_conf = daily_setups['confidence'].mean()
-            st.metric("Avg Confidence", f"{avg_conf:.1%}")
+            # Convert confidence to numeric before calculating mean
+            confidence_numeric = pd.to_numeric(daily_setups['confidence'], errors='coerce')
+            avg_conf = confidence_numeric.mean()
+            # Handle confidence values that might be strings or numbers
+            try:
+                if pd.isna(avg_conf):
+                    confidence_str = "N/A"
+                elif isinstance(avg_conf, str):
+                    confidence_str = f"{float(avg_conf):.1%}"
+                else:
+                    confidence_str = f"{avg_conf:.1%}"
+            except (ValueError, TypeError):
+                confidence_str = str(avg_conf) if avg_conf is not None else "N/A"
+            st.metric("Avg Confidence", confidence_str)
         with col4:
             pending = len(daily_setups[daily_setups['status'] == 'pending'])
             st.metric("Pending", pending)
@@ -4278,7 +4478,18 @@ def display_created_at_interface(asset, interval, config):
                     else:
                         st.write(f"📊 **{status.upper()}**")
                     
-                    st.write(f"Confidence: {setup['confidence']:.1%}")
+                    # Handle confidence values that might be strings or numbers
+                    try:
+                        confidence_val = setup['confidence']
+                        if pd.isna(confidence_val):
+                            confidence_str = "N/A"
+                        elif isinstance(confidence_val, str):
+                            confidence_str = f"{float(confidence_val):.1%}"
+                        else:
+                            confidence_str = f"{confidence_val:.1%}"
+                    except (ValueError, TypeError):
+                        confidence_str = str(setup['confidence']) if setup['confidence'] is not None else "N/A"
+                    st.write(f"Confidence: {confidence_str}")
                 
                 with col5:
                     st.write(f"ID: {setup['id']}")

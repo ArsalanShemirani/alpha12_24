@@ -1,5 +1,5 @@
 {
-  "timestamp": "2025-08-22T06:16:16.392012",
+  "timestamp": "2025-08-22T20:44:24.672272",
   "source": "ui_dashboard",
   "settings": {
     "max_setups_per_day": 3,
@@ -10,7 +10,7 @@
     "ob_edge_delta": 0.2,
     "ob_signed_thr": 0.6,
     "min_conf_arm": 0.58,
-    "model_type": "rf",
+    "model_type": "xgb",
     "calibrate_probs": true,
     "alerts_enabled": true
   }

@@ -389,7 +389,7 @@ _SETUP_FIELDS = [
     "id","unique_id","asset","interval","direction","entry","stop","target","rr",
     "size_units","notional_usd","leverage",
     "created_at","expires_at","status","confidence","trigger_rule","entry_buffer_bps",
-    "origin"
+    "origin","triggered_at","trigger_price","trigger_ts"
 ]
 
 def _load_setups_df() -> pd.DataFrame:
@@ -639,6 +639,8 @@ def track_loop(symbol_default="BTCUSDT", interval_default="5m", sleep_seconds=15
                         # Reset to pending if triggered_at is missing
                         df.loc[idx, 'status'] = 'pending'
                         df.loc[idx, 'triggered_at'] = ''
+                        df.loc[idx, 'trigger_price'] = pd.NA
+                        df.loc[idx, 'trigger_ts'] = pd.NA
                         print(f"[tracker] ✅ Reset triggered setup to pending (missing triggered_at)")
                     
                     if "Invalid entry price" in error or "Invalid stop price" in error or "Invalid target price" in error:
@@ -653,8 +655,10 @@ def track_loop(symbol_default="BTCUSDT", interval_default="5m", sleep_seconds=15
                 except Exception as e:
                     print(f"[tracker] ❌ Failed to save fixed data: {e}")
             
-            # Only process auto setups, not manual setups (manual setups are managed by user)
-            watch = df[(df["status"].isin(["pending","triggered","executed"])) & (df["origin"] == "auto")].copy()
+            # Process auto setups and executed manual setups (manual setups that are pending are managed by user)
+            watch = df[(df["status"].isin(["pending","triggered","executed"])) & 
+                      ((df["origin"] == "auto") | 
+                       ((df["origin"] == "manual") & (df["status"] == "executed")))].copy()
             if watch.empty:
                 time.sleep(max(3, int(sleep_seconds)))
                 continue
@@ -715,7 +719,7 @@ def track_loop(symbol_default="BTCUSDT", interval_default="5m", sleep_seconds=15
                         except Exception:
                             pass
                         
-                        # Only check trigger if setup was created before the current candle started
+                        # Check if setup was created before the current candle started
                         # This prevents false triggers from historical price movements
                         if pd.notna(setup_created_at) and pd.notna(bar_ts):
                             # Calculate candle duration based on interval
@@ -729,8 +733,9 @@ def track_loop(symbol_default="BTCUSDT", interval_default="5m", sleep_seconds=15
                         
                         if _trigger_touch(rule, buf, str(row["direction"]), float(row["entry"]), bar):
                             df.loc[idx, "status"] = "triggered"
-                            df.loc[idx, "trigger_ts"] = bar_ts
-                            df.loc[idx, "trigger_price"] = float(bar["close"])  # conservative
+                            df.loc[idx, "trigger_ts"] = str(bar_ts)
+                            df.loc[idx, "trigger_price"] = str(float(bar["close"]))  # Convert to string to avoid dtype issues
+                            df.loc[idx, "triggered_at"] = str(bar_ts.tz_convert(MY_TZ))  # Add triggered_at timestamp
                             if pd.isna(row.get("trigger_price")) and "trigger_price" in df.columns:
                                 df.loc[idx, "price_at_trigger"] = float(bar["close"])  # alias field for logs
                             # Convert to Malaysian time for Telegram alert
@@ -750,8 +755,9 @@ def track_loop(symbol_default="BTCUSDT", interval_default="5m", sleep_seconds=15
                         
                         if _trigger_touch(rule, buf, str(row["direction"]), float(row["entry"]), bar):
                             df.loc[idx, "status"] = "triggered"
-                            df.loc[idx, "trigger_ts"] = bar_ts
-                            df.loc[idx, "trigger_price"] = float(bar["close"])  # conservative
+                            df.loc[idx, "trigger_ts"] = str(bar_ts)
+                            df.loc[idx, "trigger_price"] = str(float(bar["close"]))  # Convert to string to avoid dtype issues
+                            df.loc[idx, "triggered_at"] = str(bar_ts.tz_convert(MY_TZ))  # Add triggered_at timestamp
                             if pd.isna(row.get("trigger_price")) and "trigger_price" in df.columns:
                                 df.loc[idx, "price_at_trigger"] = float(bar["close"])  # alias field for logs
                             # Convert to Malaysian time for Telegram alert
@@ -762,7 +768,7 @@ def track_loop(symbol_default="BTCUSDT", interval_default="5m", sleep_seconds=15
                             _tg_send(f"Setup TRIGGERED{execution_type} {asset} {iv} ({row['direction'].upper()})\\nSetup ID: {row.get('unique_id', 'N/A')}\\nEntry: {row['entry']:.2f} → Triggered @ {float(bar['close']):.2f}\\nStop: {row['stop']:.2f} | Target: {row['target']:.2f}\\nTime: {bar_ts_my.strftime('%Y-%m-%d %H:%M:%S')} MY")
                             continue
                     
-                    if status == "triggered" or status == "executed":
+                    if status == "triggered":
                         trig_ts = pd.to_datetime(row.get("trigger_ts"), errors="coerce", utc=True)
                         if pd.isna(trig_ts):
                             trig_ts = bar_ts
@@ -779,7 +785,8 @@ def track_loop(symbol_default="BTCUSDT", interval_default="5m", sleep_seconds=15
                         end_ts = min(exp, bar_ts)
 
                         try:
-                            win = get_window(asset, iv, trig_ts, end_ts)
+                            # Ensure we pass pandas Timestamp objects to get_window
+                            win = get_window(asset, iv, pd.Timestamp(trig_ts), pd.Timestamp(end_ts))
                         except Exception:
                             win = None
 
