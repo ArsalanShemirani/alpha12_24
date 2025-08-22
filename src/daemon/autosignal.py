@@ -212,11 +212,22 @@ def _to_my_tz_index(idx) -> pd.DatetimeIndex:
 
 # --------- CSV utils (canonical schema)
 SETUP_FIELDS = [
-    "id","asset","interval","direction","entry","stop","target","rr",
+    "id","unique_id","asset","interval","direction","entry","stop","target","rr",
     "size_units","notional_usd","leverage",
     "created_at","expires_at","triggered_at","status","confidence","trigger_rule","entry_buffer_bps",
     "origin"
 ]
+
+def _generate_unique_id(asset: str, interval: str, direction: str, origin: str = "auto") -> str:
+    """
+    Generate a unique, user-friendly ID for setups.
+    
+    Format: {ORIGIN}-{ASSET}-{TIMEFRAME}-{DIRECTION}-{TIMESTAMP}
+    Example: AUTO-ETHUSDT-4h-SHORT-20250822-1201
+    """
+    timestamp = _now_utc().strftime('%Y%m%d-%H%M')
+    prefix = "AUTO" if origin == "auto" else "MANUAL"
+    return f"{prefix}-{asset}-{interval}-{direction.upper()}-{timestamp}"
 
 def _setups_csv_path() -> str:
     return os.path.join(RUNS_DIR, "setups.csv")
@@ -508,13 +519,15 @@ def _build_setup(direction: str, price: float, atr: float, rr: float,
     }
 
 
-def build_autosetup_levels(direction: str, last_price: float, atr: float, rr: float, interval: str = "1h", features: dict = None) -> dict:
+def build_autosetup_levels(direction: str, last_price: float, atr: float, rr: float, interval: str = "1h", features: dict = None, k_entry: float = None) -> dict:
     """
     Compute entry/stop/target levels for autosignal setups.
     Uses timeframe-specific stop loss percentages of entry price.
     Uses adaptive selector for take profit calculation if features available.
     """
-    k_entry = K_ENTRY_DEFAULT
+    # Use provided k_entry or fall back to default
+    if k_entry is None:
+        k_entry = K_ENTRY_DEFAULT
     
     # Get timeframe-specific stop loss percentage of entry price
     stop_loss_pct = {
@@ -721,8 +734,8 @@ def autosignal_once(assets: List[str], interval: str, days: int = 120) -> None:
     # Get UI configuration overrides
     ui_config = _get_ui_override_config()
     
-    # Always use 1h for autosignal regardless of input interval
-    autosignal_interval = "1h"
+    # Always use 4h for autosignal regardless of input interval
+    autosignal_interval = "4h"
     if interval != autosignal_interval:
         print(f"[autosignal] Overriding interval {interval} → {autosignal_interval} (autosignal always uses 4h)")
     
@@ -997,7 +1010,7 @@ def autosignal_once(assets: List[str], interval: str, days: int = 120) -> None:
     
     setup = build_autosetup_levels(
         direction=direction, last_price=price, atr=atr_val, rr=min_rr,
-        interval=autosignal_interval, features=features
+        interval=autosignal_interval, features=features, k_entry=k_entry
     )
     
     # Add expiry time
@@ -1035,8 +1048,10 @@ def autosignal_once(assets: List[str], interval: str, days: int = 120) -> None:
     
     # Append to CSV
     row_id = f"AUTO-{asset}-{autosignal_interval}-{_now_utc().strftime('%Y%m%d_%H%M%S')}"
+    unique_id = _generate_unique_id(asset, autosignal_interval, direction, "auto")
     row = {
         "id": row_id,
+        "unique_id": unique_id,
         "asset": asset,
         "interval": autosignal_interval,
         "direction": direction,
@@ -1068,10 +1083,42 @@ def autosignal_once(assets: List[str], interval: str, days: int = 120) -> None:
         "max_pain_toward": maxpain_info.get("max_pain_toward"),
         "max_pain_weight": maxpain_info.get("max_pain_weight", 1.0),
     }
-    _append_setup_row(row)
-    print(f"[autosignal] appended {row_id}: {direction} {asset} {autosignal_interval} "
-          f"entry={row['entry']:.2f} stop={row['stop']:.2f} target={row['target']:.2f} "
-          f"rr={row['rr']:.2f} conf={row['confidence']:.3f} created_at={row['created_at']}")
+    
+    # Validate setup data before saving
+    validation_errors = []
+    if not row.get('id') or row['id'].strip() == '':
+        validation_errors.append("Missing setup ID")
+    if not row.get('unique_id') or row['unique_id'].strip() == '':
+        validation_errors.append("Missing unique ID")
+    if not row.get('created_at') or row['created_at'].strip() == '':
+        validation_errors.append("Missing created_at timestamp")
+    if not row.get('status') or row['status'] != 'pending':
+        validation_errors.append(f"Invalid status: {row.get('status')} (should be 'pending')")
+    if not row.get('entry') or float(row['entry']) <= 0:
+        validation_errors.append(f"Invalid entry price: {row.get('entry')}")
+    if not row.get('stop') or float(row['stop']) <= 0:
+        validation_errors.append(f"Invalid stop price: {row.get('stop')}")
+    if not row.get('target') or float(row['target']) <= 0:
+        validation_errors.append(f"Invalid target price: {row.get('target')}")
+    
+    if validation_errors:
+        error_msg = f"[autosignal] VALIDATION FAILED for {row_id}: " + "; ".join(validation_errors)
+        print(error_msg)
+        # Send alert about validation failure
+        _send_telegram(f"🚨 SETUP VALIDATION FAILED\n{error_msg}\nSetup data: {row}")
+        return False
+    
+    # Save setup with validation
+    try:
+        _append_setup_row(row)
+        print(f"[autosignal] ✅ VALIDATED and appended {row_id}: {direction} {asset} {autosignal_interval} "
+              f"entry={row['entry']:.2f} stop={row['stop']:.2f} target={row['target']:.2f} "
+              f"rr={row['rr']:.2f} conf={row['confidence']:.3f} created_at={row['created_at']}")
+    except Exception as e:
+        error_msg = f"[autosignal] FAILED to save setup {row_id}: {e}"
+        print(error_msg)
+        _send_telegram(f"🚨 SETUP SAVE FAILED\n{error_msg}\nSetup data: {row}")
+        return False
 
     # Shadow stop logging (Phase-1, no behavior change)
     try:
@@ -1111,6 +1158,7 @@ def autosignal_once(assets: List[str], interval: str, days: int = 120) -> None:
     _send_telegram(
         text=(
             f"Auto setup {asset} {autosignal_interval} ({direction.upper()})\n"
+            f"Setup ID: {unique_id}\n"
             f"Entry: {row['entry']:.2f}\n"
             f"Stop: {row['stop']:.2f}\n"
             f"Target: {row['target']:.2f}\n"

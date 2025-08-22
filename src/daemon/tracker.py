@@ -386,7 +386,7 @@ def _hb():
 
 # Canonical setups schema (aligned with dashboard)
 _SETUP_FIELDS = [
-    "id","asset","interval","direction","entry","stop","target","rr",
+    "id","unique_id","asset","interval","direction","entry","stop","target","rr",
     "size_units","notional_usd","leverage",
     "created_at","expires_at","status","confidence","trigger_rule","entry_buffer_bps",
     "origin"
@@ -580,6 +580,79 @@ def track_loop(symbol_default="BTCUSDT", interval_default="5m", sleep_seconds=15
                 time.sleep(max(3, int(sleep_seconds)))
                 continue
 
+            # Validate and fix corrupted setups before processing
+            corrupted_setups = []
+            for idx, row in df.iterrows():
+                if pd.isna(row.get('id')) or str(row.get('id', '')).strip() == '':
+                    corrupted_setups.append((idx, "Missing setup ID"))
+                elif pd.isna(row.get('unique_id')) or str(row.get('unique_id', '')).strip() == '':
+                    corrupted_setups.append((idx, "Missing unique ID"))
+                elif pd.isna(row.get('created_at')) or str(row.get('created_at', '')).strip() == '':
+                    corrupted_setups.append((idx, "Missing created_at timestamp"))
+                elif pd.isna(row.get('status')) or str(row.get('status', '')).strip() == '':
+                    corrupted_setups.append((idx, "Missing status"))
+                elif str(row.get('status', '')).strip() == 'triggered' and (pd.isna(row.get('triggered_at')) or str(row.get('triggered_at', '')).strip() == ''):
+                    corrupted_setups.append((idx, "Triggered setup missing triggered_at timestamp"))
+                elif pd.isna(row.get('entry')) or float(row.get('entry', 0)) <= 0:
+                    corrupted_setups.append((idx, f"Invalid entry price: {row.get('entry')}"))
+                elif pd.isna(row.get('stop')) or float(row.get('stop', 0)) <= 0:
+                    corrupted_setups.append((idx, f"Invalid stop price: {row.get('stop')}"))
+                elif pd.isna(row.get('target')) or float(row.get('target', 0)) <= 0:
+                    corrupted_setups.append((idx, f"Invalid target price: {row.get('target')}"))
+            
+            # Fix corrupted setups
+            if corrupted_setups:
+                print(f"[tracker] 🚨 Found {len(corrupted_setups)} corrupted setups, attempting to fix...")
+                for idx, error in corrupted_setups:
+                    setup_id = df.loc[idx, 'id'] if pd.notna(df.loc[idx, 'id']) else f"UNKNOWN-{idx}"
+                    print(f"[tracker] Fixing corrupted setup {setup_id}: {error}")
+                    
+                    # Try to fix common issues
+                    if "Missing unique ID" in error and pd.notna(df.loc[idx, 'id']):
+                        # Generate unique ID from setup ID
+                        try:
+                            asset = df.loc[idx, 'asset']
+                            interval = df.loc[idx, 'interval']
+                            direction = df.loc[idx, 'direction']
+                            origin = df.loc[idx, 'origin']
+                            unique_id = f"{asset}-{interval}-{direction.upper()}-{pd.Timestamp.now().strftime('%Y%m%d-%H%M')}"
+                            df.loc[idx, 'unique_id'] = unique_id
+                            print(f"[tracker] ✅ Generated unique_id: {unique_id}")
+                        except Exception as e:
+                            print(f"[tracker] ❌ Failed to generate unique_id: {e}")
+                    
+                    if "Missing created_at timestamp" in error:
+                        # Set current timestamp
+                        try:
+                            current_time = pd.Timestamp.now(tz='Asia/Kuala_Lumpur').isoformat()
+                            df.loc[idx, 'created_at'] = current_time
+                            print(f"[tracker] ✅ Set created_at: {current_time}")
+                        except Exception as e:
+                            print(f"[tracker] ❌ Failed to set created_at: {e}")
+                    
+                    if "Missing status" in error:
+                        # Set default status
+                        df.loc[idx, 'status'] = 'pending'
+                        print(f"[tracker] ✅ Set status: pending")
+                    
+                    if "Triggered setup missing triggered_at timestamp" in error:
+                        # Reset to pending if triggered_at is missing
+                        df.loc[idx, 'status'] = 'pending'
+                        df.loc[idx, 'triggered_at'] = ''
+                        print(f"[tracker] ✅ Reset triggered setup to pending (missing triggered_at)")
+                    
+                    if "Invalid entry price" in error or "Invalid stop price" in error or "Invalid target price" in error:
+                        # Mark as corrupted and skip
+                        df.loc[idx, 'status'] = 'cancelled'
+                        print(f"[tracker] ❌ Marked setup as cancelled due to invalid prices")
+                
+                # Save fixed data
+                try:
+                    df.to_csv(SETUPS_CSV, index=False)
+                    print(f"[tracker] ✅ Saved fixed setups data")
+                except Exception as e:
+                    print(f"[tracker] ❌ Failed to save fixed data: {e}")
+            
             # Only process auto setups, not manual setups (manual setups are managed by user)
             watch = df[(df["status"].isin(["pending","triggered","executed"])) & (df["origin"] == "auto")].copy()
             if watch.empty:
@@ -628,7 +701,7 @@ def track_loop(symbol_default="BTCUSDT", interval_default="5m", sleep_seconds=15
                             })
                             # Convert to Malaysian time for Telegram alert
                             bar_ts_my = bar_ts.tz_convert(MY_TZ) if bar_ts.tz is not None else bar_ts.tz_localize('UTC').tz_convert(MY_TZ)
-                            _tg_send(f"Setup EXPIRED {asset} {iv}\\nEntry: {float(row.get('entry', 0)):.2f}\\nExpired at: {bar_ts_my.strftime('%Y-%m-%d %H:%M:%S')} MY")
+                            _tg_send(f"Setup EXPIRED {asset} {iv}\\nSetup ID: {row.get('unique_id', 'N/A')}\\nEntry: {float(row.get('entry', 0)):.2f}\\nExpired at: {bar_ts_my.strftime('%Y-%m-%d %H:%M:%S')} MY")
                             continue
 
                         rule = str(row.get("trigger_rule", "touch"))
@@ -667,7 +740,7 @@ def track_loop(symbol_default="BTCUSDT", interval_default="5m", sleep_seconds=15
                             if row.get('status') == 'executed':
                                 execution_type = " (ACTIVE EXECUTED)"
                             
-                            _tg_send(f"Setup TRIGGERED{execution_type} {asset} {iv} ({row['direction'].upper()})\\nEntry: {row['entry']:.2f} → Triggered @ {float(bar['close']):.2f}\\nStop: {row['stop']:.2f} | Target: {row['target']:.2f}\\nTime: {bar_ts_my.strftime('%Y-%m-%d %H:%M:%S')} MY")
+                            _tg_send(f"Setup TRIGGERED{execution_type} {asset} {iv} ({row['direction'].upper()})\\nSetup ID: {row.get('unique_id', 'N/A')}\\nEntry: {row['entry']:.2f} → Triggered @ {float(bar['close']):.2f}\\nStop: {row['stop']:.2f} | Target: {row['target']:.2f}\\nTime: {bar_ts_my.strftime('%Y-%m-%d %H:%M:%S')} MY")
                             continue
 
                     # Check for trigger on executed setups that haven't been triggered yet
@@ -686,7 +759,7 @@ def track_loop(symbol_default="BTCUSDT", interval_default="5m", sleep_seconds=15
                             # Check if this is an executed setup
                             execution_type = " (ACTIVE EXECUTED)"
                             
-                            _tg_send(f"Setup TRIGGERED{execution_type} {asset} {iv} ({row['direction'].upper()})\\nEntry: {row['entry']:.2f} → Triggered @ {float(bar['close']):.2f}\\nStop: {row['stop']:.2f} | Target: {row['target']:.2f}\\nTime: {bar_ts_my.strftime('%Y-%m-%d %H:%M:%S')} MY")
+                            _tg_send(f"Setup TRIGGERED{execution_type} {asset} {iv} ({row['direction'].upper()})\\nSetup ID: {row.get('unique_id', 'N/A')}\\nEntry: {row['entry']:.2f} → Triggered @ {float(bar['close']):.2f}\\nStop: {row['stop']:.2f} | Target: {row['target']:.2f}\\nTime: {bar_ts_my.strftime('%Y-%m-%d %H:%M:%S')} MY")
                             continue
                     
                     if status == "triggered" or status == "executed":
@@ -782,7 +855,7 @@ def track_loop(symbol_default="BTCUSDT", interval_default="5m", sleep_seconds=15
                             if row.get('status') == 'executed':
                                 execution_type = " (EXECUTED)"
                             
-                            _tg_send(f"Setup {outcome.upper()}{execution_type} {asset} {iv}\\nEntry: {entry_px:.2f} → Exit: {float(exit_px):.2f}\\nPnL: {float(pnl_pct):.2f}%\\nTime: {exit_ts_my.strftime('%Y-%m-%d %H:%M:%S')} MY")
+                            _tg_send(f"Setup {outcome.upper()}{execution_type} {asset} {iv}\\nSetup ID: {row.get('unique_id', 'N/A')}\\nEntry: {entry_px:.2f} → Exit: {float(exit_px):.2f}\\nPnL: {float(pnl_pct):.2f}%\\nTime: {exit_ts_my.strftime('%Y-%m-%d %H:%M:%S')} MY")
 
             # Save updated setups with proper schema
             _save_setups_df(df)

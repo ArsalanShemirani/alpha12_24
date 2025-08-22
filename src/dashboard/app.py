@@ -162,7 +162,7 @@ EMPTY_MODEL_SUMMARY = {
 
 # --- Setups CSV canonical schema (keep stable) ---
 SETUP_FIELDS = [
-    "id","asset","interval","direction","entry","stop","target","rr",
+    "id","unique_id","asset","interval","direction","entry","stop","target","rr",
     "size_units","notional_usd","leverage",
     "created_at","expires_at","triggered_at","status","confidence","trigger_rule","entry_buffer_bps",
     "origin"
@@ -351,6 +351,136 @@ def _append_setup_row(row: dict):
             w.writeheader()
         w.writerow(safe_row)
 
+def _manual_exit_setup(unique_id: str, outcome: str, exit_price: float, setup_row: pd.Series):
+    """
+    Manually exit a triggered setup and record the trade.
+    
+    Args:
+        setup_id: ID of the setup to exit
+        outcome: Outcome type ("manual_exit", "stop", etc.)
+        exit_price: Price at which to exit
+        setup_row: Setup row data
+    """
+    try:
+        # Calculate PnL
+        entry_price = float(setup_row['entry'])
+        direction = str(setup_row['direction'])
+        
+        if direction == "long":
+            pnl_pct = (exit_price - entry_price) / entry_price * 100.0
+        else:  # short
+            pnl_pct = (entry_price - exit_price) / entry_price * 100.0
+        
+        # Get current timestamp
+        exit_ts = pd.Timestamp.now(tz='UTC')
+        
+        # Update setups.csv
+        setups = _load_setups_df()
+        mask = setups["unique_id"] == unique_id
+        if mask.any():
+            setups.loc[mask, "status"] = outcome
+            _save_setups_df(setups)
+        else:
+            st.error(f"Setup {unique_id} not found!")
+            return
+        
+        # Record trade in trade_history.csv
+        trade_row = {
+            "setup_id": unique_id,
+            "asset": setup_row['asset'],
+            "interval": setup_row['interval'],
+            "direction": direction,
+            "created_at": setup_row['created_at'],
+            "trigger_ts": setup_row.get('triggered_at', setup_row['created_at']),
+            "entry": entry_price,
+            "stop": float(setup_row['stop']),
+            "target": float(setup_row['target']),
+            "exit_ts": exit_ts,
+            "exit_price": exit_price,
+            "outcome": outcome,
+            "pnl_pct": pnl_pct,
+            "rr_planned": float(setup_row.get('rr', 0.0)),
+            "confidence": float(setup_row.get('confidence', 0.0)),
+            "size_units": setup_row.get('size_units', pd.NA),
+            "notional_usd": setup_row.get('notional_usd', pd.NA),
+            "leverage": setup_row.get('leverage', pd.NA),
+            "price_at_trigger": setup_row.get('trigger_price', pd.NA),
+            "trigger_rule": setup_row.get('trigger_rule', pd.NA),
+            "entry_buffer_bps": setup_row.get('entry_buffer_bps', pd.NA),
+        }
+        
+        # Append to trade history
+        _append_trade_row(trade_row)
+        
+        # Send Telegram notification
+        try:
+            from src.daemon.tracker import _tg_send
+            exit_ts_my = exit_ts.tz_convert('Asia/Kuala_Lumpur')
+            outcome_text = "MANUAL EXIT" if outcome == "manual_exit" else outcome.upper()
+            _tg_send(f"Setup {outcome_text} {setup_row['asset']} {setup_row['interval']}\\nSetup ID: {unique_id}\\nEntry: {entry_price:.2f} → Exit: {exit_price:.2f}\\nPnL: {pnl_pct:.2f}%\\nTime: {exit_ts_my.strftime('%Y-%m-%d %H:%M:%S')} MY")
+        except Exception as e:
+            print(f"Failed to send Telegram notification: {e}")
+        
+        # Show success message
+        outcome_emoji = {"manual_exit": "🎯", "stop": "🔴", "target": "🟢"}
+        emoji = outcome_emoji.get(outcome, "📊")
+        st.success(f"{emoji} Setup {unique_id} exited successfully! PnL: {pnl_pct:.2f}%")
+        st.rerun()
+        
+    except Exception as e:
+        st.error(f"Failed to exit setup: {e}")
+
+def _append_trade_row(trade_row: dict):
+    """
+    Append a trade row to trade_history.csv
+    """
+    try:
+        runs_dir = getattr(config, 'runs_dir', 'runs')
+        th_path = os.path.join(runs_dir, "trade_history.csv")
+        
+        # Create directory if it doesn't exist
+        os.makedirs(os.path.dirname(th_path), exist_ok=True)
+        
+        # Define trade history columns
+        trade_columns = [
+            "setup_id", "asset", "interval", "direction",
+            "created_at", "trigger_ts", "entry", "stop", "target",
+            "exit_ts", "exit_price", "outcome", "pnl_pct", "pnl_pct_net",
+            "rr_planned", "confidence", "size_units", "notional_usd", "leverage",
+            "fees_bps_per_side", "price_at_trigger", "trigger_rule", "entry_buffer_bps"
+        ]
+        
+        # Calculate net PnL (with fees)
+        fees_bps_side = float(getattr(config, "fees_bps_per_side", 4.0))
+        pnl_pct = float(trade_row.get("pnl_pct", 0.0))
+        pnl_pct_net = pnl_pct - (2.0 * fees_bps_side) / 100.0
+        trade_row["pnl_pct_net"] = pnl_pct_net
+        trade_row["fees_bps_per_side"] = fees_bps_side
+        
+        # Convert timestamps to ISO format
+        for ts_col in ["created_at", "trigger_ts", "exit_ts"]:
+            if ts_col in trade_row and trade_row[ts_col] is not None:
+                if isinstance(trade_row[ts_col], pd.Timestamp):
+                    trade_row[ts_col] = trade_row[ts_col].isoformat()
+        
+        # Create DataFrame with proper columns
+        df_row = pd.DataFrame([trade_row])
+        
+        # Ensure all required columns exist
+        for col in trade_columns:
+            if col not in df_row.columns:
+                df_row[col] = pd.NA
+        
+        # Reorder columns
+        df_row = df_row[trade_columns]
+        
+        # Append to CSV
+        write_header = not os.path.exists(th_path)
+        df_row.to_csv(th_path, mode="a", index=False, header=write_header)
+        
+    except Exception as e:
+        print(f"Failed to append trade row: {e}")
+
 def _load_setups_df():
     p = _setups_csv_path()
     if not os.path.exists(p):
@@ -410,6 +540,17 @@ def _save_setups_df(df: pd.DataFrame):
 
 def _mk_setup_id(asset, interval):
     return f"{asset}-{interval}-{_setup_now_tag()}"
+
+def _generate_unique_id(asset: str, interval: str, direction: str, origin: str = "manual") -> str:
+    """
+    Generate a unique, user-friendly ID for setups.
+    
+    Format: {ORIGIN}-{ASSET}-{TIMEFRAME}-{DIRECTION}-{TIMESTAMP}
+    Example: MANUAL-ETHUSDT-4h-SHORT-20250822-1201
+    """
+    timestamp = _setup_now_tag().replace("_", "-")
+    prefix = "AUTO" if origin == "auto" else "MANUAL"
+    return f"{prefix}-{asset}-{interval}-{direction.upper()}-{timestamp}"
 
 def _estimate_atr(df: pd.DataFrame, n: int = 14) -> float:
     # Use existing ATR if present, else quick estimator
@@ -1264,27 +1405,20 @@ def run_dashboard_analysis(asset: str, interval: str, days: int, model_type: str
                 # Use the same build_autosetup_levels function as auto setups for consistency
                 from src.daemon.autosignal import build_autosetup_levels
                 
-                # For manual setups, add a buffer to prevent immediate triggering
-                # Use a larger entry buffer for manual setups to ensure they don't trigger immediately
-                manual_entry_buffer = 1.0  # 1.0 ATR buffer for manual setups
+                # Get UI configuration for setup building (same as autosignal)
+                k_entry = float(st.session_state.get("k_entry", 0.5))
                 
-                if direction == "long":
-                    # For long setups, entry should be below current price with buffer
-                    entry_price = last_price - manual_entry_buffer * atr_val
-                else:
-                    # For short setups, entry should be above current price with buffer
-                    entry_price = last_price + manual_entry_buffer * atr_val
-                
+                # Use current market price directly (same as autosignal)
+                # The build_autosetup_levels function will apply the k_entry offset
                 setup_levels = build_autosetup_levels(
-                    direction=direction, last_price=entry_price, atr=atr_val, rr=rr, interval=interval, features=features
+                    direction=direction, last_price=last_price, atr=atr_val, rr=rr, interval=interval, features=features, k_entry=k_entry
                 )
                 
                 # Debug: Log entry price calculation
                 print(f"[dashboard] Manual setup entry calculation:")
                 print(f"  Current market price: {last_price:.2f}")
                 print(f"  ATR: {atr_val:.2f}")
-                print(f"  Manual entry buffer: {manual_entry_buffer:.2f} ATR")
-                print(f"  Calculated entry price: {entry_price:.2f}")
+                print(f"  k_entry (UI config): {k_entry:.2f} ATR")
                 print(f"  Final entry price: {setup_levels['entry']:.2f}")
                 print(f"  Direction: {direction}")
                 print(f"  Distance from current price: {abs(last_price - setup_levels['entry']):.2f} ({abs(last_price - setup_levels['entry'])/last_price*100:.2f}%)")
@@ -1537,8 +1671,10 @@ def run_dashboard_analysis(asset: str, interval: str, days: int, model_type: str
                         print(f"[dashboard] Failed to get sentiment data: {e}")
                     
                     # Create setup row with only SETUP_FIELDS to prevent CSV corruption
+                    unique_id = _generate_unique_id(asset, interval, direction, "manual")
                     setup_row = {
                         "id": setup_id,
+                        "unique_id": unique_id,
                         "asset": asset,
                         "interval": interval,
                         "direction": direction,
@@ -1573,8 +1709,31 @@ def run_dashboard_analysis(asset: str, interval: str, days: int, model_type: str
                         "max_pain_toward": maxpain_info.get("max_pain_toward"),
                         "max_pain_weight": maxpain_info.get("max_pain_weight", 1.0),
                     }
+                    # Validate setup data before saving
+                    validation_errors = []
+                    if not setup_row.get('id') or str(setup_row['id']).strip() == '':
+                        validation_errors.append("Missing setup ID")
+                    if not setup_row.get('unique_id') or str(setup_row['unique_id']).strip() == '':
+                        validation_errors.append("Missing unique ID")
+                    if not setup_row.get('created_at') or str(setup_row['created_at']).strip() == '':
+                        validation_errors.append("Missing created_at timestamp")
+                    if not setup_row.get('status') or setup_row['status'] != 'pending':
+                        validation_errors.append(f"Invalid status: {setup_row.get('status')} (should be 'pending')")
+                    if not setup_row.get('entry') or float(setup_row['entry']) <= 0:
+                        validation_errors.append(f"Invalid entry price: {setup_row.get('entry')}")
+                    if not setup_row.get('stop') or float(setup_row['stop']) <= 0:
+                        validation_errors.append(f"Invalid stop price: {setup_row.get('stop')}")
+                    if not setup_row.get('target') or float(setup_row['target']) <= 0:
+                        validation_errors.append(f"Invalid target price: {setup_row.get('target')}")
+                    
+                    if validation_errors:
+                        error_msg = f"[dashboard] VALIDATION FAILED for {setup_id}: " + "; ".join(validation_errors)
+                        print(error_msg)
+                        st.error(f"❌ Setup validation failed: {'; '.join(validation_errors)}")
+                        return
+                    
                     # Debug: Log setup row before saving
-                    print(f"[dashboard] About to save setup row:")
+                    print(f"[dashboard] ✅ VALIDATED setup row:")
                     print(f"  ID: {setup_row.get('id')}")
                     print(f"  Asset: {setup_row.get('asset')}")
                     print(f"  Entry: {setup_row.get('entry')}")
@@ -1582,8 +1741,15 @@ def run_dashboard_analysis(asset: str, interval: str, days: int, model_type: str
                     print(f"  Origin: {setup_row.get('origin')}")
                     print(f"  Created: {setup_row.get('created_at')}")
                     
-                    _append_setup_row(setup_row)
-                    st.success(f"Setup created and saved (ID: {setup_id}).")
+                    # Save setup with validation
+                    try:
+                        _append_setup_row(setup_row)
+                        st.success(f"✅ Setup created and saved (ID: {setup_id}).")
+                    except Exception as e:
+                        error_msg = f"[dashboard] FAILED to save setup {setup_id}: {e}"
+                        print(error_msg)
+                        st.error(f"❌ Failed to save setup: {e}")
+                        return
 
                     # Shadow stop logging (Phase-1, no behavior change)
                     try:
@@ -1642,6 +1808,7 @@ def run_dashboard_analysis(asset: str, interval: str, days: int, model_type: str
                         
                         msg = (
                             f"Manual setup {asset} {interval} ({direction.upper()})\n"
+                            f"Setup ID: {setup_row['unique_id']}\n"
                             f"Entry: {setup_row['entry']:.2f}\n"
                             f"Stop: {setup_row['stop']:.2f}\n"
                             f"Target: {setup_row['target']:.2f}\n"
@@ -2432,7 +2599,7 @@ def display_setups_monitor(asset: str, interval: str, data: pd.DataFrame):
     """Show comprehensive setups lifecycle with Telegram alerts status.
     Uses setups.csv persisted via _append_setup_row / _save_setups_df.
     """
-    st.subheader("📊 Setups Monitor & Lifecycle Tracking")
+    st.subheader(f"📊 Setups Monitor & Lifecycle Tracking - {asset} (All Timeframes)")
 
     # Load saved setups (tolerant reader already normalizes columns)
     try:
@@ -2450,6 +2617,40 @@ def display_setups_monitor(asset: str, interval: str, data: pd.DataFrame):
         setups["status"] = setups["status"].astype(str).str.strip().str.lower()
     if "origin" in setups.columns:
         setups["origin"] = setups["origin"].fillna("manual").astype(str).str.strip().str.lower()
+    
+    # Generate unique_id for existing setups that don't have it
+    if "unique_id" not in setups.columns:
+        setups["unique_id"] = ""
+    
+    # Fill missing unique_ids for existing setups
+    missing_unique_ids = setups["unique_id"].isna() | (setups["unique_id"] == "")
+    if missing_unique_ids.any():
+        for idx in setups[missing_unique_ids].index:
+            row = setups.loc[idx]
+            try:
+                # Generate unique_id from existing data
+                asset = str(row.get('asset', 'UNKNOWN'))
+                interval = str(row.get('interval', '1h'))
+                direction = str(row.get('direction', 'UNKNOWN')).upper()
+                origin = str(row.get('origin', 'manual'))
+                
+                # Use created_at timestamp if available, otherwise use current time
+                if pd.notna(row.get('created_at')):
+                    try:
+                        created_ts = pd.to_datetime(row['created_at'])
+                        timestamp = created_ts.strftime('%Y%m%d-%H%M')
+                    except:
+                        timestamp = _setup_now_tag().replace("_", "-")
+                else:
+                    timestamp = _setup_now_tag().replace("_", "-")
+                
+                prefix = "AUTO" if origin == "auto" else "MANUAL"
+                unique_id = f"{prefix}-{asset}-{interval}-{direction}-{timestamp}"
+                setups.loc[idx, "unique_id"] = unique_id
+            except Exception as e:
+                print(f"Failed to generate unique_id for setup {idx}: {e}")
+                # Fallback unique_id
+                setups.loc[idx, "unique_id"] = f"LEGACY-{asset}-{interval}-{timestamp}"
     # Convert time columns
     for c in ("created_at","expires_at","triggered_at"):
         if c in setups.columns:
@@ -2461,46 +2662,129 @@ def display_setups_monitor(asset: str, interval: str, data: pd.DataFrame):
         except Exception:
             setups[c] = ts
 
-    # Filter by current asset/interval (UI context)
+    # Filter by current asset only (show all timeframes for selected asset)
     df_view = setups.copy()
     if "asset" in df_view.columns:
         df_view = df_view[df_view["asset"].astype(str) == str(asset)]
-    if "interval" in df_view.columns:
-        df_view = df_view[df_view["interval"].astype(str) == str(interval)]
 
     if df_view.empty:
-        st.info("No setups for this asset/interval yet.")
+        st.info(f"No setups for {asset} yet.")
         return
 
     # ---------- summary counts ----------
     total = len(df_view)
-    statuses = ["pending", "triggered", "target", "stop", "timeout", "cancelled"]
+    statuses = ["executed", "pending", "triggered", "target", "stop", "timeout", "cancelled", "manual_exit"]
     counts = {s: int((df_view["status"] == s).sum()) for s in statuses}
 
     # Display status summary with colors
     st.markdown("### 📈 Setup Status Summary")
-    col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
+    col1, col2, col3, col4, col5, col6, col7, col8, col9 = st.columns(9)
     
     col1.metric("Total", total, delta=None)
-    col2.metric("🟡 Pending", counts['pending'], delta=None)
-    col3.metric("🔵 Triggered", counts['triggered'], delta=None)
-    col4.metric("🟢 Target", counts['target'], delta=None)
-    col5.metric("🔴 Stop", counts['stop'], delta=None)
-    col6.metric("🟣 Timeout", counts['timeout'], delta=None)
-    col7.metric("⚫ Cancelled", counts['cancelled'], delta=None)
+    col2.metric("🟠 Executed", counts['executed'], delta=None)
+    col3.metric("🟡 Pending", counts['pending'], delta=None)
+    col4.metric("🔵 Triggered", counts['triggered'], delta=None)
+    col5.metric("🟢 Target", counts['target'], delta=None)
+    col6.metric("🔴 Stop", counts['stop'], delta=None)
+    col7.metric("🟣 Timeout", counts['timeout'], delta=None)
+    col8.metric("🎯 Manual Exit", counts['manual_exit'], delta=None)
+    col9.metric("⚫ Cancelled", counts['cancelled'], delta=None)
 
     st.markdown("---")
 
     # Lifecycle sections
     st.markdown("### 🔄 Setup Lifecycle")
 
-    # 1. PENDING SETUPS (waiting for entry)
+    # 1. EXECUTED SETUPS (user decided to execute, waiting for entry)
+    executed = df_view[df_view["status"] == "executed"].copy()
+    if not executed.empty:
+        st.markdown("#### 🟠 **EXECUTED SETUPS** - Ready for Entry")
+        st.caption("These setups have been executed by the user and are waiting for the entry price to be reached. (All timeframes shown)")
+        
+        executed_cols = ["unique_id", "asset", "interval", "direction", "entry", "stop", "target", "rr", "confidence", "created_at", "expires_at", "origin"]
+        executed_cols = [col for col in executed_cols if col in executed.columns]
+        
+        if "created_at" in executed.columns:
+            executed = executed.sort_values("created_at", ascending=False)
+        
+        # Format timestamps for display
+        display_df = executed[executed_cols].copy()
+        for col in ["created_at", "expires_at"]:
+            if col in display_df.columns:
+                display_df[col] = display_df[col].apply(lambda x: x.strftime("%Y-%m-%d %H:%M:%S") if pd.notna(x) else "N/A")
+        
+        st.dataframe(display_df, use_container_width=True, hide_index=True)
+        st.caption(f"📊 {len(executed)} executed setups")
+        
+        # Manual cancel functionality for executed setups
+        if len(executed) > 0:
+            st.markdown("#### 🎯 **Manual Cancel Controls**")
+            st.caption("Cancel executed setups before they trigger")
+            
+            # Select setup to cancel
+            setup_options = [f"{row['unique_id']} - {row['asset']} {row['direction'].upper()} (Entry: {row['entry']:.2f})" for _, row in executed.iterrows()]
+            selected_setup = st.selectbox("Select setup to cancel:", setup_options, key="cancel_executed_select")
+            
+            if selected_setup:
+                # Extract setup ID from selection
+                unique_id = selected_setup.split(" - ")[0]
+                
+                # Handle cases where unique_id might not exist (for old setups)
+                if 'unique_id' not in executed.columns:
+                    st.warning("Setup data doesn't contain unique_id field. Please refresh the page.")
+                    return
+                
+                # Find the selected setup
+                matching_setups = executed[executed['unique_id'] == unique_id]
+                if matching_setups.empty:
+                    st.error(f"Setup {unique_id} not found in executed setups.")
+                    return
+                
+                selected_row = matching_setups.iloc[0]
+                
+                # Get current market price
+                try:
+                    from src.data.binance_free import get_latest_price
+                    current_price = get_latest_price(selected_row['asset'])
+                    if current_price is None:
+                        current_price = selected_row['entry']  # Fallback to entry price
+                except Exception:
+                    current_price = selected_row['entry']  # Fallback to entry price
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.metric("Entry Price", f"${selected_row['entry']:.2f}")
+                with col2:
+                    st.metric("Current Price", f"${current_price:.2f}")
+                
+                # Cancel button
+                if st.button("❌ Cancel Setup", type="primary", key="cancel_executed"):
+                    try:
+                        # Load and update setups
+                        setups = _load_setups_df()
+                        mask = setups["unique_id"] == unique_id
+                        if mask.any():
+                            setups.loc[mask, "status"] = "cancelled"
+                            _save_setups_df(setups)
+                            
+                            # Send Telegram alert
+                            from src.daemon.tracker import _tg_send
+                            _tg_send(f"❌ Setup CANCELLED\\n{selected_row['asset']} {selected_row['interval']} {selected_row['direction'].upper()}\\nSetup ID: {unique_id}")
+                            
+                            st.success(f"✅ Setup {unique_id} cancelled successfully!")
+                            st.rerun()
+                        else:
+                            st.error("Setup not found!")
+                    except Exception as e:
+                        st.error(f"Failed to cancel setup: {e}")
+
+    # 2. PENDING SETUPS (waiting for entry)
     pending = df_view[df_view["status"] == "pending"].copy()
     if not pending.empty:
         st.markdown("#### 🟡 **PENDING SETUPS** - Waiting for Entry Price")
-        st.caption("These setups are waiting for the entry price to be reached. They will trigger when price touches the entry level.")
+        st.caption("These setups are waiting for the entry price to be reached. They will trigger when price touches the entry level. (All timeframes shown)")
         
-        pending_cols = ["id", "asset", "interval", "direction", "entry", "stop", "target", "rr", "confidence", "created_at", "expires_at", "origin"]
+        pending_cols = ["unique_id", "asset", "interval", "direction", "entry", "stop", "target", "rr", "confidence", "created_at", "expires_at", "origin"]
         pending_cols = [col for col in pending_cols if col in pending.columns]
         
         if "created_at" in pending.columns:
@@ -2520,21 +2804,27 @@ def display_setups_monitor(asset: str, interval: str, data: pd.DataFrame):
             if len(pending) > 0:
                 # Get the most recent pending setup
                 latest_pending = pending.iloc[0]
-                setup_id = latest_pending["id"]
+                
+                # Handle cases where unique_id might not exist (for old setups)
+                if 'unique_id' not in latest_pending.index or pd.isna(latest_pending.get('unique_id')):
+                    st.warning("Setup data doesn't contain unique_id field. Please refresh the page.")
+                    return
+                
+                unique_id = latest_pending["unique_id"]
                 
                 try:
                     # Load and update setups
                     setups = _load_setups_df()
-                    mask = setups["id"] == setup_id
+                    mask = setups["unique_id"] == unique_id
                     if mask.any():
                         setups.loc[mask, "status"] = "cancelled"
                         _save_setups_df(setups)
                         
                         # Send Telegram alert
                         from src.daemon.tracker import _tg_send
-                        _tg_send(f"❌ Setup CANCELLED\\n{latest_pending['asset']} {latest_pending['interval']} {latest_pending['direction'].upper()}\\nSetup ID: {setup_id}")
+                        _tg_send(f"❌ Setup CANCELLED\\n{latest_pending['asset']} {latest_pending['interval']} {latest_pending['direction'].upper()}\\nSetup ID: {unique_id}")
                         
-                        st.success(f"✅ Setup {setup_id} cancelled successfully!")
+                        st.success(f"✅ Setup {unique_id} cancelled successfully!")
                         st.rerun()
                     else:
                         st.error("Setup not found!")
@@ -2543,13 +2833,13 @@ def display_setups_monitor(asset: str, interval: str, data: pd.DataFrame):
             else:
                 st.warning("No pending setups to cancel")
 
-    # 2. TRIGGERED SETUPS (active trades)
+    # 3. TRIGGERED SETUPS (active trades)
     triggered = df_view[df_view["status"] == "triggered"].copy()
     if not triggered.empty:
         st.markdown("#### 🔵 **TRIGGERED SETUPS** - Active Trades")
-        st.caption("These setups have been triggered and are now active trades waiting for target/stop.")
+        st.caption("These setups have been triggered and are now active trades waiting for target/stop. (All timeframes shown)")
         
-        triggered_cols = ["id", "asset", "interval", "direction", "entry", "stop", "target", "rr", "confidence", "triggered_at", "expires_at", "origin"]
+        triggered_cols = ["unique_id", "asset", "interval", "direction", "entry", "stop", "target", "rr", "confidence", "triggered_at", "expires_at", "origin"]
         triggered_cols = [col for col in triggered_cols if col in triggered.columns]
         
         if "triggered_at" in triggered.columns:
@@ -2563,12 +2853,73 @@ def display_setups_monitor(asset: str, interval: str, data: pd.DataFrame):
         
         st.dataframe(display_df, use_container_width=True, hide_index=True)
         st.caption(f"📊 {len(triggered)} active trades")
+        
+        # Manual exit functionality for triggered setups
+        if len(triggered) > 0:
+            st.markdown("#### 🎯 **Manual Exit Controls**")
+            st.caption("Exit triggered setups manually with current market price")
+            
+            # Select setup to exit
+            setup_options = [f"{row['unique_id']} - {row['asset']} {row['direction'].upper()} (Entry: {row['entry']:.2f})" for _, row in triggered.iterrows()]
+            selected_setup = st.selectbox("Select setup to exit:", setup_options, key="exit_setup_select")
+            
+            if selected_setup:
+                # Extract setup ID from selection
+                unique_id = selected_setup.split(" - ")[0]
+                
+                # Handle cases where unique_id might not exist (for old setups)
+                if 'unique_id' not in triggered.columns:
+                    st.warning("Setup data doesn't contain unique_id field. Please refresh the page.")
+                    return
+                
+                # Find the selected setup
+                matching_setups = triggered[triggered['unique_id'] == unique_id]
+                if matching_setups.empty:
+                    st.error(f"Setup {unique_id} not found in triggered setups.")
+                    return
+                
+                selected_row = matching_setups.iloc[0]
+                
+                # Get current market price
+                try:
+                    from src.data.binance_free import get_latest_price
+                    current_price = get_latest_price(selected_row['asset'])
+                    if current_price is None:
+                        current_price = selected_row['entry']  # Fallback to entry price
+                except Exception:
+                    current_price = selected_row['entry']  # Fallback to entry price
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Entry Price", f"${selected_row['entry']:.2f}")
+                with col2:
+                    st.metric("Current Price", f"${current_price:.2f}")
+                with col3:
+                    # Calculate PnL
+                    if selected_row['direction'] == 'long':
+                        pnl_pct = (current_price - selected_row['entry']) / selected_row['entry'] * 100
+                    else:
+                        pnl_pct = (selected_row['entry'] - current_price) / selected_row['entry'] * 100
+                    pnl_color = "normal" if pnl_pct >= 0 else "inverse"
+                    st.metric("PnL %", f"{pnl_pct:.2f}%", delta=None, delta_color=pnl_color)
+                
+                # Exit buttons
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    if st.button("🟢 Exit at Current Price", type="primary", key="exit_current"):
+                        _manual_exit_setup(unique_id, "manual_exit", current_price, selected_row)
+                with col2:
+                    if st.button("🔴 Exit at Stop Loss", key="exit_stop"):
+                        _manual_exit_setup(unique_id, "stop", selected_row['stop'], selected_row)
+                with col3:
+                    if st.button("🟡 Exit at Entry", key="exit_entry"):
+                        _manual_exit_setup(unique_id, "manual_exit", selected_row['entry'], selected_row)
 
-    # 3. COMPLETED SETUPS (target/stop/timeout)
-    completed = df_view[df_view["status"].isin(["target", "stop", "timeout"])].copy()
+    # 4. COMPLETED SETUPS (target/stop/timeout/manual_exit)
+    completed = df_view[df_view["status"].isin(["target", "stop", "timeout", "manual_exit"])].copy()
     if not completed.empty:
         st.markdown("#### ✅ **COMPLETED SETUPS** - Finished Trades")
-        st.caption("These setups have completed with target hit, stop loss, or timeout.")
+        st.caption("These setups have completed with target hit, stop loss, timeout, or manual exit. (All timeframes shown)")
         
         # Load trade history for PnL data
         runs_dir = getattr(config, 'runs_dir', 'runs')
@@ -3044,11 +3395,15 @@ def display_trade_execution_interface(asset, interval, config):
                 with col5:
                     # Position sizing inputs
                     if is_selected:
+                        # Use actual setup data for defaults
+                        default_risk = float(setup.get('notional_usd', 100.0))
+                        default_leverage = float(setup.get('leverage', 1.0))
+                        
                         risk_amount = st.number_input(
                             "Risk ($)", 
                             min_value=1.0, 
                             max_value=10000.0, 
-                            value=100.0, 
+                            value=default_risk, 
                             step=10.0,
                             key=f"risk_{setup_id}"
                         )
@@ -3057,7 +3412,7 @@ def display_trade_execution_interface(asset, interval, config):
                             "Leverage", 
                             min_value=1.0, 
                             max_value=10.0, 
-                            value=1.0, 
+                            value=default_leverage, 
                             step=0.1,
                             key=f"leverage_{setup_id}"
                         )

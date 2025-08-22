@@ -2,7 +2,7 @@
 
 # Alpha12 Background Analysis Startup Script
 # This script sets up the background analysis daemon to run on 15m data
-# while keeping autosignal on 1h intervals
+# while keeping autosignal on 4h intervals
 
 set -e
 
@@ -54,7 +54,7 @@ else:
 # Show current configuration
 echo ""
 echo "📊 Current Configuration:"
-echo "  Autosignal Interval: ${ALPHA12_INTERVAL:-1h}"
+echo "  Autosignal Interval: ${ALPHA12_INTERVAL:-4h}"
 echo "  Training Interval: ${ALPHA12_TRAINING_INTERVAL:-15m}"
 echo "  Analysis Sleep: ${ALPHA12_ANALYSIS_SLEEP:-300} seconds"
 echo "  Assets: ${ALPHA12_SYMBOL:-BTCUSDT}"
@@ -66,7 +66,7 @@ echo ""
 echo "1. Start background analysis daemon:"
 echo "   PYTHONPATH=\$(pwd) python src/daemon/background_analysis.py"
 echo ""
-echo "2. Start autosignal daemon (1h intervals):"
+echo "2. Start autosignal daemon (4h intervals):"
 echo "   PYTHONPATH=\$(pwd) python src/daemon/autosignal.py"
 echo ""
 echo "3. Start tracker daemon:"
@@ -81,7 +81,7 @@ echo ""
 echo "✅ Background analysis setup complete!"
 echo ""
 echo "💡 The system will now:"
-echo "   • Generate autosignals on 1h+ intervals (avoiding noise)"
+echo "   • Generate autosignals on 4h+ intervals (avoiding noise)"
 echo "   • Run continuous analysis on 15m data for model improvement"
 echo "   • Save analysis results to runs/background_analysis.csv"
 echo "   • Retrain models from live logs when available"

@@ -18,7 +18,7 @@
 ```
 AWS EC2 Instance (t3.medium or larger)
 ├── System Services (systemd)
-│   ├── alpha12-autosignal.service    # Setup generation (1h intervals)
+│   ├── alpha12-autosignal.service    # Setup generation (4h intervals)
 │   ├── alpha12-tracker.service       # 24/7 trade monitoring
 │   └── alpha12-dashboard.service     # Web dashboard (port 8501)
 ├── Python Environment
@@ -137,7 +137,7 @@ ALPHA12_SLEEP=15
 PYTHONPATH=$(pwd)
 
 # Scheduling & data
-ALPHA12_AUTOSIGNAL_INTERVAL=1h
+ALPHA12_AUTOSIGNAL_INTERVAL=4h
 ALPHA12_SOURCE="Composite (Binance Spot + Bybit derivs)"
 
 # Caps

@@ -2,7 +2,7 @@
 """
 Background Analysis Daemon
 Runs continuous analysis on multiple timeframes for model training and improvement,
-while autosignal continues to generate setups on 1h+ intervals.
+while autosignal continues to generate setups on 4h+ intervals.
 """
 
 import os

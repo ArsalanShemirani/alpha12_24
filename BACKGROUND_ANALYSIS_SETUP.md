@@ -4,7 +4,7 @@
 
 This setup provides a dual-interval approach for optimal trading system performance:
 
-- **Autosignal**: Generates trading setups on 1h+ intervals (avoiding noise)
+- **Autosignal**: Generates trading setups on 4h+ intervals (avoiding noise)
 - **Background Analysis**: Runs continuous analysis on 15m data for model improvement
 
 ## Architecture
@@ -38,7 +38,7 @@ ALPHA12_ANALYSIS_DAYS=120
 
 ### Current Settings
 
-- **Autosignal Interval**: 1h (generates setups)
+- **Autosignal Interval**: 4h (generates setups)
 - **Training Interval**: 15m (model analysis)
 - **Analysis Sleep**: 300 seconds (5 minutes)
 - **History Days**: 120 days
@@ -150,7 +150,7 @@ BTCUSDT,15m,2025-08-18T03:39:53.291825+00:00,1000,44,0.862,0.49,0.50481927710843
 ## Benefits
 
 ### 1. Noise Reduction
-- Autosignal only generates setups on 1h+ intervals
+- Autosignal only generates setups on 4h+ intervals
 - Avoids false signals from 5m/15m noise
 - Higher quality setups with better win rates
 

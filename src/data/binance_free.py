@@ -91,3 +91,15 @@ class BinanceFreeProvider:
 def assemble(symbol: str = "BTCUSDT", interval: str = "5m", limit: int = 300) -> pd.DataFrame:
     """Spot-only data assembly - no synthetic derivatives"""
     return BinanceFreeProvider().assemble(symbol=symbol, interval=interval, limit=limit)
+
+def get_latest_price(symbol: str = "BTCUSDT") -> Optional[float]:
+    """Get the latest price for a symbol from Binance spot API"""
+    try:
+        provider = BinanceFreeProvider()
+        df = provider.get_klines(symbol, interval="1m", limit=1)
+        if not df.empty:
+            return float(df["close"].iloc[-1])
+        return None
+    except Exception as e:
+        logger.error(f"Failed to get latest price for {symbol}: {e}")
+        return None

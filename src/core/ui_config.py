@@ -109,8 +109,8 @@ def get_autosignal_config() -> Dict[str, Any]:
     
     # Build autosignal config with UI overrides
     config = {
-        # Always use 1h for autosignal (hardcoded)
-        "interval": "1h",
+        # Always use 4h for autosignal (hardcoded)
+        "interval": "4h",
         
         # Model settings (UI can override)
         "model_type": get_ui_setting("model_type", os.getenv("ALPHA12_PREFERRED_MODEL", "xgb")),

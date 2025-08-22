@@ -2,12 +2,12 @@
 
 ## Overview
 
-The UI-autosignal integration allows the autosignal daemon to respect user settings from the dashboard while maintaining the 1h timeframe restriction for optimal signal quality.
+The UI-autosignal integration allows the autosignal daemon to respect user settings from the dashboard while maintaining the 4h timeframe restriction for optimal signal quality.
 
 ## Key Features
 
 ### ✅ **Hardcoded 1h Timeframe**
-- Autosignal always uses 1h interval regardless of UI setting
+- Autosignal always uses 4h interval regardless of UI setting
 - Prevents noise from lower timeframes (5m, 15m)
 - Ensures high-quality signal generation
 
@@ -117,10 +117,10 @@ def _get_ui_override_config():
 
 **Interval Override:**
 ```python
-# Always use 1h for autosignal regardless of input interval
-autosignal_interval = "1h"
+# Always use 4h for autosignal regardless of input interval
+autosignal_interval = "4h"
 if interval != autosignal_interval:
-    print(f"[autosignal] Overriding interval {interval} → {autosignal_interval} (autosignal always uses 1h)")
+          print(f"[autosignal] Overriding interval {interval} → {autosignal_interval} (autosignal always uses 4h)")
 ```
 
 **UI Settings Application:**
@@ -288,4 +288,4 @@ cat runs/ui_config.json | jq '.timestamp'
 
 ## Conclusion
 
-The UI-autosignal integration provides a powerful and flexible way to control autosignal behavior while maintaining the quality benefits of the 1h timeframe restriction. Users can now fine-tune all aspects of the autosignal system through the familiar dashboard interface, with real-time updates and comprehensive fallback mechanisms ensuring reliable operation.
+The UI-autosignal integration provides a powerful and flexible way to control autosignal behavior while maintaining the quality benefits of the 4h timeframe restriction. Users can now fine-tune all aspects of the autosignal system through the familiar dashboard interface, with real-time updates and comprehensive fallback mechanisms ensuring reliable operation.
