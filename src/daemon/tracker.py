@@ -44,6 +44,14 @@ from src.core.config import config
 from src.runtime.clock import now, to_my_tz, bars_to_minutes
 from src.data.price_feed import get_latest_candle, get_window
 
+# Import R:R invariant logging
+try:
+    from src.utils.rr_invariants import compute_rr_invariants, log_rr_invariants, get_rr_invariants
+    RR_INVARIANT_AVAILABLE = True
+except ImportError:
+    RR_INVARIANT_AVAILABLE = False
+    print("[tracker] R:R invariant logging not available")
+
 # --- Tracker robustness & gating patch ---
 # - Fix heartbeat tz error (avoid tz_localize on tz-aware timestamps)
 # - Ensure all CSV writes include a 'ts' column
@@ -746,6 +754,36 @@ def track_loop(symbol_default="BTCUSDT", interval_default="5m", sleep_seconds=15
                                 execution_type = " (ACTIVE EXECUTED)"
                             
                             _tg_send(f"Setup TRIGGERED{execution_type} {asset} {iv} ({row['direction'].upper()})\\nSetup ID: {row.get('unique_id', 'N/A')}\\nEntry: {row['entry']:.2f} → Triggered @ {float(bar['close']):.2f}\\nStop: {row['stop']:.2f} | Target: {row['target']:.2f}\\nTime: {bar_ts_my.strftime('%Y-%m-%d %H:%M:%S')} MY")
+                            
+                            # R:R invariant logging (trigger/fill time)
+                            if RR_INVARIANT_AVAILABLE:
+                                try:
+                                    # Get existing invariants from decision time
+                                    existing_invariants = get_rr_invariants(row.get('unique_id', ''))
+                                    if existing_invariants:
+                                        # Update with fill data
+                                        entry_fill = float(bar['close'])
+                                        invariants = compute_rr_invariants(
+                                            direction=str(row['direction']),
+                                            entry_planned=float(existing_invariants.get('entry_planned', row['entry'])),
+                                            entry_fill=entry_fill,
+                                            R_used=float(existing_invariants.get('R_used', 0)),
+                                            s_planned=float(existing_invariants.get('s_planned', 0)),
+                                            t_planned=float(existing_invariants.get('t_planned', 0)),
+                                            live_entry=float(row['entry']),
+                                            live_stop=float(row['stop']),
+                                            live_tp=float(row['target']),
+                                            setup_id=row.get('unique_id', ''),
+                                            tf=str(row['interval'])
+                                        )
+                                        
+                                        if invariants:
+                                            log_rr_invariants(invariants)
+                                            print(f"[tracker] R:R invariants updated for {row.get('unique_id', '')}: "
+                                                  f"entry_fill={entry_fill:.2f}, entry_shift_R={invariants.get('entry_shift_R', 'N/A'):.2f}")
+                                except Exception as e:
+                                    print(f"[tracker] R:R invariant logging error: {e}")
+                            
                             continue
 
                     # Check for trigger on executed setups that haven't been triggered yet
@@ -766,6 +804,36 @@ def track_loop(symbol_default="BTCUSDT", interval_default="5m", sleep_seconds=15
                             execution_type = " (ACTIVE EXECUTED)"
                             
                             _tg_send(f"Setup TRIGGERED{execution_type} {asset} {iv} ({row['direction'].upper()})\\nSetup ID: {row.get('unique_id', 'N/A')}\\nEntry: {row['entry']:.2f} → Triggered @ {float(bar['close']):.2f}\\nStop: {row['stop']:.2f} | Target: {row['target']:.2f}\\nTime: {bar_ts_my.strftime('%Y-%m-%d %H:%M:%S')} MY")
+                            
+                            # R:R invariant logging (trigger/fill time)
+                            if RR_INVARIANT_AVAILABLE:
+                                try:
+                                    # Get existing invariants from decision time
+                                    existing_invariants = get_rr_invariants(row.get('unique_id', ''))
+                                    if existing_invariants:
+                                        # Update with fill data
+                                        entry_fill = float(bar['close'])
+                                        invariants = compute_rr_invariants(
+                                            direction=str(row['direction']),
+                                            entry_planned=float(existing_invariants.get('entry_planned', row['entry'])),
+                                            entry_fill=entry_fill,
+                                            R_used=float(existing_invariants.get('R_used', 0)),
+                                            s_planned=float(existing_invariants.get('s_planned', 0)),
+                                            t_planned=float(existing_invariants.get('t_planned', 0)),
+                                            live_entry=float(row['entry']),
+                                            live_stop=float(row['stop']),
+                                            live_tp=float(row['target']),
+                                            setup_id=row.get('unique_id', ''),
+                                            tf=str(row['interval'])
+                                        )
+                                        
+                                        if invariants:
+                                            log_rr_invariants(invariants)
+                                            print(f"[tracker] R:R invariants updated for {row.get('unique_id', '')}: "
+                                                  f"entry_fill={entry_fill:.2f}, entry_shift_R={invariants.get('entry_shift_R', 'N/A'):.2f}")
+                                except Exception as e:
+                                    print(f"[tracker] R:R invariant logging error: {e}")
+                            
                             continue
                     
                     if status == "triggered":

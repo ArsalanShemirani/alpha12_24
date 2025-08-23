@@ -1,0 +1,4 @@
+setup_id,tf,direction,R_used,s_planned,t_planned,rr_planned,rr_planned_logged,warn_rr_floor_violation,entry_planned,entry_fill,entry_shift_R,stop_final_from_fill,tp_final_from_fill,rr_realized_from_fill,rr_realized_from_prices,rr_distortion,warn_missing_fill,invariant_ts
+TEST-LONG-001,1h,long,10.0,1.0,1.8,1.8,1.8,False,100.0,101.0,0.1,91.0,119.0,1.8,1.8,0.0,False,2025-08-23T20:54:11.437246+08:00
+AUTO-BTCUSDT-4h-SHORT-20250823-1600,4h,short,1237.818571428572,1.395063104966912,2.5111135889404466,1.8000000000000036,1.8000000000000036,False,115122.33464285715,,,,,,,,True,2025-08-24T00:00:20.424862+08:00
+AUTO-BTCUSDT-4h-SHORT-20250823-2000,4h,short,1174.9728571428568,1.473578676893433,2.6524416184081745,1.7999999999999967,1.7999999999999967,False,115427.66321428571,,,,,,,,True,2025-08-24T04:00:20.308521+08:00

@@ -49,6 +49,14 @@ except ImportError:
     ADAPTIVE_CONFIDENCE_AVAILABLE = False
     print("[autosignal] Adaptive confidence gate not available, using fallback")
 
+# Import R:R invariant logging
+try:
+    from src.utils.rr_invariants import compute_rr_invariants, log_rr_invariants
+    RR_INVARIANT_AVAILABLE = True
+except ImportError:
+    RR_INVARIANT_AVAILABLE = False
+    print("[autosignal] R:R invariant logging not available")
+
 MODEL_DIR = getattr(config, 'model_dir', 'artifacts')
 
 def _load_latest_predictor(asset: str, interval: str):
@@ -1120,6 +1128,47 @@ def autosignal_once(assets: List[str], interval: str, days: int = 120) -> None:
         _send_telegram(f"🚨 SETUP SAVE FAILED\n{error_msg}\nSetup data: {row}")
         return False
 
+    # R:R invariant logging (decision time)
+    if RR_INVARIANT_AVAILABLE:
+        try:
+            # Get ATR as R_used
+            R_used = _estimate_atr(df)
+            
+            # Calculate s_planned and t_planned from the setup
+            entry_price = float(row["entry"])
+            stop_price = float(row["stop"])
+            target_price = float(row["target"])
+            
+            if direction == "long":
+                s_planned = abs(entry_price - stop_price) / R_used
+                t_planned = abs(target_price - entry_price) / R_used
+            else:  # short
+                s_planned = abs(stop_price - entry_price) / R_used
+                t_planned = abs(entry_price - target_price) / R_used
+            
+            # Compute and log invariants at decision time (entry_fill=None)
+            invariants = compute_rr_invariants(
+                direction=direction,
+                entry_planned=entry_price,
+                entry_fill=None,  # Not filled yet
+                R_used=R_used,
+                s_planned=s_planned,
+                t_planned=t_planned,
+                live_entry=entry_price,
+                live_stop=stop_price,
+                live_tp=target_price,
+                setup_id=unique_id,
+                tf=autosignal_interval
+            )
+            
+            if invariants:
+                log_rr_invariants(invariants)
+                print(f"[autosignal] R:R invariants logged for {unique_id}: "
+                      f"s_planned={s_planned:.2f}, t_planned={t_planned:.2f}, "
+                      f"rr_planned={invariants.get('rr_planned', 'N/A'):.2f}")
+        except Exception as e:
+            print(f"[autosignal] R:R invariant logging error: {e}")
+
     # Shadow stop logging (Phase-1, no behavior change)
     try:
         from src.trading.shadow_stops import compute_and_log_shadow_stop
@@ -1171,7 +1220,29 @@ def autosignal_once(assets: List[str], interval: str, days: int = 120) -> None:
     )
 
 
+def should_run_autosignal():
+    """Check if we should run autosignal based on 4h candle timing."""
+    now_utc = pd.Timestamp.now(tz='UTC')
+    candle_hours = [0, 4, 8, 12, 16, 20]
+    
+    # Check if we're within 5 minutes of a 4h candle close
+    for hour in candle_hours:
+        candle_close = now_utc.replace(hour=hour, minute=0, second=0, microsecond=0)
+        if now_utc.hour == hour and now_utc.minute < 5:
+            return True, f"4h candle close at {hour:02d}:00 UTC"
+    
+    return False, f"Not at 4h candle close (current: {now_utc.strftime('%H:%M UTC')})"
+
+
 def main():
+    # Check if we should run based on 4h candle timing
+    should_run, reason = should_run_autosignal()
+    if not should_run:
+        print(f"[autosignal] ⏰ Skipping - {reason}")
+        return
+    
+    print(f"[autosignal] 🎯 Running at {reason}")
+    
     # Default lookback days for autosignal training
     days = int(os.getenv("ALPHA12_AUTOSIGNAL_LOOKBACK_DAYS", "120"))
     try:

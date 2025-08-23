@@ -88,6 +88,14 @@ import joblib
 import requests
 import re
 
+# Import R:R invariant logging
+try:
+    from src.utils.rr_invariants import compute_rr_invariants, log_rr_invariants
+    RR_INVARIANT_AVAILABLE = True
+except ImportError:
+    RR_INVARIANT_AVAILABLE = False
+    print("[dashboard] R:R invariant logging not available")
+
 # --- Backtest helpers ---
 def _ensure_two_col_proba(p):
     """Return ndarray shape (n,2) as [P0, P1] regardless of input shape."""
@@ -414,10 +422,11 @@ def _manual_exit_setup(unique_id: str, outcome: str, exit_price: float, setup_ro
         
         # Send Telegram notification
         try:
-            from src.daemon.tracker import _tg_send
+            from src.daemon.autosignal import _send_telegram
             exit_ts_my = exit_ts.tz_convert('Asia/Kuala_Lumpur')
             outcome_text = "MANUAL EXIT" if outcome == "manual_exit" else outcome.upper()
-            _tg_send(f"Setup {outcome_text} {setup_row['asset']} {setup_row['interval']}\\nSetup ID: {unique_id}\\nEntry: {entry_price:.2f} → Exit: {exit_price:.2f}\\nPnL: {pnl_pct:.2f}%\\nTime: {exit_ts_my.strftime('%Y-%m-%d %H:%M:%S')} MY")
+            msg = f"Setup {outcome_text} {setup_row['asset']} {setup_row['interval']}\nSetup ID: {unique_id}\nEntry: {entry_price:.2f} → Exit: {exit_price:.2f}\nPnL: {pnl_pct:.2f}%\nTime: {exit_ts_my.strftime('%Y-%m-%d %H:%M:%S')} MY"
+            _send_telegram(msg)
         except Exception as e:
             print(f"Failed to send Telegram notification: {e}")
         
@@ -1751,6 +1760,48 @@ def run_dashboard_analysis(asset: str, interval: str, days: int, model_type: str
                         st.error(f"❌ Failed to save setup: {e}")
                         return
 
+                    # R:R invariant logging (decision time)
+                    if RR_INVARIANT_AVAILABLE:
+                        try:
+                            # Get ATR as R_used
+                            from src.daemon.autosignal import _estimate_atr
+                            R_used = _estimate_atr(data)
+                            
+                            # Calculate s_planned and t_planned from the setup
+                            entry_price = float(setup_levels["entry"])
+                            stop_price = float(setup_levels["stop"])
+                            target_price = float(setup_levels["target"])
+                            
+                            if direction == "long":
+                                s_planned = abs(entry_price - stop_price) / R_used
+                                t_planned = abs(target_price - entry_price) / R_used
+                            else:  # short
+                                s_planned = abs(stop_price - entry_price) / R_used
+                                t_planned = abs(entry_price - target_price) / R_used
+                            
+                            # Compute and log invariants at decision time (entry_fill=None)
+                            invariants = compute_rr_invariants(
+                                direction=direction,
+                                entry_planned=entry_price,
+                                entry_fill=None,  # Not filled yet
+                                R_used=R_used,
+                                s_planned=s_planned,
+                                t_planned=t_planned,
+                                live_entry=entry_price,
+                                live_stop=stop_price,
+                                live_tp=target_price,
+                                setup_id=setup_row['unique_id'],
+                                tf=interval
+                            )
+                            
+                            if invariants:
+                                log_rr_invariants(invariants)
+                                print(f"[dashboard] R:R invariants logged for {setup_row['unique_id']}: "
+                                      f"s_planned={s_planned:.2f}, t_planned={t_planned:.2f}, "
+                                      f"rr_planned={invariants.get('rr_planned', 'N/A'):.2f}")
+                        except Exception as e:
+                            print(f"[dashboard] R:R invariant logging error: {e}")
+
                     # Shadow stop logging (Phase-1, no behavior change)
                     try:
                         from src.trading.shadow_stops import compute_and_log_shadow_stop
@@ -2817,8 +2868,9 @@ def display_setups_monitor(asset: str, interval: str, data: pd.DataFrame):
                             _save_setups_df(setups)
                             
                             # Send Telegram alert
-                            from src.daemon.tracker import _tg_send
-                            _tg_send(f"❌ Setup CANCELLED\\n{selected_row['asset']} {selected_row['interval']} {selected_row['direction'].upper()}\\nSetup ID: {unique_id}")
+                            from src.daemon.autosignal import _send_telegram
+                            msg = f"❌ Setup CANCELLED\n{selected_row['asset']} {selected_row['interval']} {selected_row['direction'].upper()}\nSetup ID: {unique_id}"
+                            _send_telegram(msg)
                             
                             st.success(f"✅ Setup {unique_id} cancelled successfully!")
                             st.rerun()
@@ -2870,8 +2922,9 @@ def display_setups_monitor(asset: str, interval: str, data: pd.DataFrame):
                         _save_setups_df(setups)
                         
                         # Send Telegram alert
-                        from src.daemon.tracker import _tg_send
-                        _tg_send(f"❌ Setup CANCELLED\\n{latest_pending['asset']} {latest_pending['interval']} {latest_pending['direction'].upper()}\\nSetup ID: {unique_id}")
+                        from src.daemon.autosignal import _send_telegram
+                        msg = f"❌ Setup CANCELLED\n{latest_pending['asset']} {latest_pending['interval']} {latest_pending['direction'].upper()}\nSetup ID: {unique_id}"
+                        _send_telegram(msg)
                         
                         st.success(f"✅ Setup {unique_id} cancelled successfully!")
                         st.rerun()
@@ -3036,8 +3089,9 @@ def display_setups_monitor(asset: str, interval: str, data: pd.DataFrame):
     # Test Telegram alerts
     if st.button("🔔 Test Telegram Alert", help="Send a test message to verify Telegram alerts are working"):
         try:
-            from src.daemon.tracker import _tg_send
-            _tg_send("Test alert from dashboard\\nThis confirms Telegram alerts are working correctly!")
+            from src.daemon.autosignal import _send_telegram
+            msg = "Test alert from dashboard\nThis confirms Telegram alerts are working correctly!"
+            _send_telegram(msg)
             st.success("✅ Test alert sent successfully!")
         except Exception as e:
             st.error(f"❌ Failed to send test alert: {e}")
@@ -3455,8 +3509,15 @@ def display_trade_execution_interface(asset, interval, config):
                 with col5:
                     # Position sizing inputs
                     if is_selected:
-                        # Use actual setup data for defaults
-                        default_risk = float(setup.get('notional_usd', 100.0))
+                        # Calculate proper risk amount based on setup's size_units and stop distance
+                        entry_price = float(setup.get('entry', 0))
+                        stop_price = float(setup.get('stop', 0))
+                        size_units = float(setup.get('size_units', 0))
+                        risk_per_unit = abs(entry_price - stop_price)
+                        calculated_risk = size_units * risk_per_unit if risk_per_unit > 0 else 100.0
+                        
+                        # Use calculated risk or fallback to notional_usd
+                        default_risk = calculated_risk if calculated_risk > 0 else float(setup.get('notional_usd', 100.0))
                         default_leverage = float(setup.get('leverage', 1.0))
                         
                         risk_amount = st.number_input(
@@ -3698,12 +3759,13 @@ def execute_selected_trades_internal(executions, setups_df, config):
         leverage = trade_data['leverage']
         setup = trade_data['setup_data']
         
-        # Calculate position size based on risk (original logic)
+        # Calculate position size using the same logic as auto setups
         entry_price = float(setup['entry'])
         stop_price = float(setup['stop'])
         risk_per_unit = abs(entry_price - stop_price)
         
         if risk_per_unit > 0:
+            # Use the same risk-based sizing as auto setups
             position_size = risk_amount / risk_per_unit
             notional_value = position_size * entry_price
         else:
@@ -3729,13 +3791,13 @@ def execute_selected_trades_internal(executions, setups_df, config):
                 setups_df.loc[idx, 'unique_id'] = unique_id
             
             # Send Telegram notification for execution
-            if st.session_state.get("tg_bot") and st.session_state.get("tg_chat"):
-                try:
-                    unique_id = setups_df.loc[idx, 'unique_id']
-                    message = f"🚀 Setup EXECUTED\nSetup ID: {unique_id}\n{setups_df.loc[idx, 'asset']} {setups_df.loc[idx, 'interval']} ({setups_df.loc[idx, 'direction'].upper()})\nEntry: ${setups_df.loc[idx, 'entry']:.4f}\nStop: ${setups_df.loc[idx, 'stop']:.4f} | Target: ${setups_df.loc[idx, 'target']:.4f}\nRisk: ${risk_amount:.2f} | Leverage: {leverage}x\nSize: {position_size:.6f} | Notional: ${notional_value:.2f}\nTime: {datetime.now().strftime('%Y-%m-%d %H:%M MY')}"
-                    st.session_state["tg_bot"].send_message(st.session_state["tg_chat"], message)
-                except Exception as e:
-                    st.error(f"Failed to send Telegram notification: {e}")
+            try:
+                unique_id = setups_df.loc[idx, 'unique_id']
+                message = f"🚀 Setup EXECUTED\nSetup ID: {unique_id}\n{setups_df.loc[idx, 'asset']} {setups_df.loc[idx, 'interval']} ({setups_df.loc[idx, 'direction'].upper()})\nEntry: ${setups_df.loc[idx, 'entry']:.4f}\nStop: ${setups_df.loc[idx, 'stop']:.4f} | Target: ${setups_df.loc[idx, 'target']:.4f}\nRisk: ${risk_amount:.2f} | Leverage: {leverage}x\nSize: {position_size:.6f} | Notional: ${notional_value:.2f}\nTime: {datetime.now().strftime('%Y-%m-%d %H:%M MY')}"
+                from src.daemon.autosignal import _send_telegram
+                _send_telegram(message)
+            except Exception as e:
+                st.error(f"Failed to send Telegram notification: {e}")
             
             executed_count += 1
     
