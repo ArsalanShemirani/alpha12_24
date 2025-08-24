@@ -1,10 +1,10 @@
 {
-  "timestamp": "2025-08-23T12:32:36.186947",
+  "timestamp": "2025-08-24T09:17:19.012167",
   "source": "ui_dashboard",
   "settings": {
     "max_setups_per_day": 3,
-    "gate_regime": false,
-    "gate_rr25": true,
+    "gate_regime": true,
+    "gate_rr25": false,
     "gate_ob": false,
     "rr25_thresh": 0.0,
     "ob_edge_delta": 0.2,

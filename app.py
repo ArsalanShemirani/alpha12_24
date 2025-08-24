@@ -1053,16 +1053,16 @@ def run_dashboard_analysis(asset: str, interval: str, days: int, model_type: str
                             return None
 
                     if st.session_state.get("gate_rr25", True):
-                        rr = _rr25_avg_for(asset)
+                        rr25_val = _rr25_avg_for(asset)
                         thr = float(st.session_state.get("rr25_thresh", 0.00))
-                        if rr is None:
+                        if rr25_val is None:
                             st.caption("RR25 not available → treating as neutral (no block).")
                         else:
-                            if direction == "long" and not (rr >= +thr):
-                                st.info(f"Setup blocked by RR25 gate (rr={rr:.4f} < +{thr:.4f}).")
+                            if direction == "long" and not (rr25_val >= +thr):
+                                st.info(f"Setup blocked by RR25 gate (rr={rr25_val:.4f} < +{thr:.4f}).")
                                 return
-                            if direction == "short" and not (rr <= -thr):
-                                st.info(f"Setup blocked by RR25 gate (rr={rr:.4f} > -{thr:.4f}).")
+                            if direction == "short" and not (rr25_val <= -thr):
+                                st.info(f"Setup blocked by RR25 gate (rr={rr25_val:.4f} > -{thr:.4f}).")
                                 return
 
                     # 5.4 Order-book imbalance gate
@@ -2299,7 +2299,7 @@ def display_account_tab():
         .replace({"": np.nan})
 
     bal = float(st.session_state.get("acct_balance", 400.0))
-                max_lev = int(st.session_state.get("max_leverage", 10))
+    max_lev = int(st.session_state.get("max_leverage", 10))
     col1, col2, col3 = st.columns(3)
     col1.metric("Configured Balance", f"${bal:,.2f}")
     col2.metric("Max Leverage", f"{max_lev}x")

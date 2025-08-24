@@ -90,7 +90,7 @@ import re
 
 # Import R:R invariant logging
 try:
-    from src.utils.rr_invariants import compute_rr_invariants, log_rr_invariants
+    from src.utils.rr_invariants import compute_rr_invariants, rr_invariant_writer, getenv_bool
     RR_INVARIANT_AVAILABLE = True
 except ImportError:
     RR_INVARIANT_AVAILABLE = False
@@ -561,7 +561,7 @@ def _generate_unique_id(asset: str, interval: str, direction: str, origin: str =
     prefix = "AUTO" if origin == "auto" else "MANUAL"
     return f"{prefix}-{asset}-{interval}-{direction.upper()}-{timestamp}"
 
-def _estimate_atr(df: pd.DataFrame, n: int = 14) -> float:
+def _estimate_atr_local(df: pd.DataFrame, n: int = 14) -> float:
     # Use existing ATR if present, else quick estimator
     if "atr" in df.columns and not df["atr"].dropna().empty:
         return float(df["atr"].dropna().iloc[-1])
@@ -892,7 +892,7 @@ export DASH_AUTH_ENABLED=0
         # Get default from environment variable
         default_max_setups = int(os.getenv("MAX_SETUPS_PER_DAY", "0"))
         max_setups_per_day = st.slider("Max setups per 24h", 0, 10, value=int(st.session_state.get("max_setups_per_day", default_max_setups)), key="max_setups_per_day")
-        gate_regime = st.toggle("Gate by Macro Regime (MA50 vs MA200)", value=st.session_state.get("gate_regime", True), key="gate_regime")
+        gate_regime = st.toggle("Gate by Macro Regime (MA200-only)", value=st.session_state.get("gate_regime", True), key="gate_regime")
         gate_rr25   = st.toggle("Gate by Deribit RR25 (nearest 2 expiries)", value=st.session_state.get("gate_rr25", True), key="gate_rr25")
         gate_ob     = st.toggle("Gate by OB Imbalance (top20)", value=st.session_state.get("gate_ob", True), key="gate_ob")
         rr25_thresh = st.number_input("RR25 abs threshold", min_value=0.0, max_value=0.10, value=st.session_state.get("rr25_thresh", 0.00), step=0.01, help="Use 0.00 for zero-cross; 0.02 for stronger bias", key="rr25_thresh")
@@ -1381,7 +1381,7 @@ def run_dashboard_analysis(asset: str, interval: str, days: int, model_type: str
             direction = latest_sig.get("signal", "flat")
             if direction != "flat" and not data.empty:
                 last_price = float(latest_sig.get("price", data["close"].iloc[-1]))
-                atr_val = _estimate_atr(data)
+                atr_val = _estimate_atr_local(data)
                 rr = float(getattr(config, "min_rr", 1.8))
                 # Ensure we have a valid timestamp for setup creation
                 try:
@@ -1435,11 +1435,52 @@ def run_dashboard_analysis(asset: str, interval: str, days: int, model_type: str
                 print(f"  Target: {setup_levels['target']:.2f}")
                 print(f"  RR: {setup_levels['rr']:.2f}")
                 
-                # Add expires_at to setup_levels
-                valid_bars = int(st.session_state.get("valid_bars", 24))
-                per_bar_min = {"5m":5, "15m":15, "1h":60, "4h":240, "1d":1440}.get(interval, 60)
-                expires_at = pd.to_datetime(now_ts) + pd.Timedelta(minutes=valid_bars * per_bar_min)
-                setup_levels["expires_at"] = expires_at
+                # Add adaptive expires_at to setup_levels
+                if os.getenv("ADAPTIVE_VALIDITY", "1") == "1":
+                    try:
+                        from src.utils.validity import compute_adaptive_validity_bars, get_validity_until
+                        
+                        # Get macro regime for validity calculation (reuse from macro gate)
+                        if 'regime_result' in locals():
+                            regime = regime_result.regime
+                        else:
+                            try:
+                                from src.trading.macro import get_macro_regime
+                                regime_result = get_macro_regime(data)
+                                regime = regime_result.regime
+                            except Exception:
+                                regime = "neutral"  # fallback
+                        
+                        # Compute adaptive validity bars
+                        valid_bars = compute_adaptive_validity_bars(
+                            tf=interval,
+                            R_used=atr_val,  # ATR used for this setup
+                            regime=regime,
+                            now_ts=now_ts
+                        )
+                        
+                        # Compute valid_until timestamp
+                        valid_until = get_validity_until(now_ts, valid_bars, interval)
+                        
+                        validity_source = "adaptive"
+                        
+                        st.caption(f"Adaptive validity: {valid_bars} bars (regime: {regime}, ATR: {atr_val:.2f})")
+                        
+                    except Exception as e:
+                        st.warning(f"Adaptive validity failed: {e}, using fallback")
+                        # Fallback to legacy fixed bars
+                        valid_bars = int(st.session_state.get("valid_bars", 24))
+                        per_bar_min = {"5m":5, "15m":15, "1h":60, "4h":240, "1d":1440}.get(interval, 60)
+                        valid_until = pd.to_datetime(now_ts) + pd.Timedelta(minutes=valid_bars * per_bar_min)
+                        validity_source = "fixed"
+                else:
+                    # Legacy fixed bars fallback
+                    valid_bars = int(st.session_state.get("valid_bars", 24))
+                    per_bar_min = {"5m":5, "15m":15, "1h":60, "4h":240, "1d":1440}.get(interval, 60)
+                    valid_until = pd.to_datetime(now_ts) + pd.Timedelta(minutes=valid_bars * per_bar_min)
+                    validity_source = "fixed"
+                
+                setup_levels["expires_at"] = valid_until
                 if setup_levels:
                     # --- Position sizing (consistent with auto setups) ---
                     try:
@@ -1485,18 +1526,44 @@ def run_dashboard_analysis(asset: str, interval: str, days: int, model_type: str
                         st.info("Setup blocked: confidence below arm threshold (fallback).")
                         return
 
-                    # 5.2 Macro regime gate (MA50/MA200)
+                    # 5.2 Macro regime gate (MA200-only)
                     if st.session_state.get("gate_regime", True):
-                        close = data["close"]
-                        ma_f = close.rolling(50, min_periods=50).mean()
-                        ma_s = close.rolling(200, min_periods=200).mean()
-                        if ma_f.dropna().empty or ma_s.dropna().empty:
-                            st.info("Setup blocked: not enough data to compute regime.")
-                            return
-                        regime = "bull" if ma_f.iloc[-1] > ma_s.iloc[-1] else "bear"
-                        if (regime == "bull" and direction != "long") or (regime == "bear" and direction != "short"):
-                            st.info(f"Setup blocked by regime gate ({regime}).")
-                            return
+                        try:
+                            from src.trading.macro import get_macro_regime, is_direction_allowed, get_manual_gate_reason
+                            
+                            # Get macro regime using MA200-only filter
+                            regime_result = get_macro_regime(data)
+                            
+                            # Check if direction conflicts with regime
+                            is_allowed, reason = is_direction_allowed(regime_result, direction, allow_override=False)
+                            
+                            if not is_allowed:
+                                # Show warning and allow override
+                                st.warning(f"Macro regime is {regime_result.regime.upper()}. A {direction.upper()} manual setup is counter-trend.")
+                                st.caption(f"MA200: {regime_result.ma200:.2f}, Price: {regime_result.current_price:.2f} ({regime_result.price_vs_ma200_pct:+.2f}%)")
+                                
+                                allow_override = st.checkbox("Allow counter-trend setup", key="macro_override")
+                                
+                                if not allow_override:
+                                    st.info("Setup not created - counter-trend setup blocked by macro regime gate.")
+                                    return
+                                
+                                # Override allowed - continue with setup creation
+                                manual_macro_gate_allowed = True
+                                manual_macro_gate_override_used = True
+                                manual_macro_gate_reason = get_manual_gate_reason(regime_result, direction)
+                            else:
+                                # Direction aligns with regime - no override needed
+                                manual_macro_gate_allowed = True
+                                manual_macro_gate_override_used = False
+                                manual_macro_gate_reason = get_manual_gate_reason(regime_result, direction)
+                                
+                        except Exception as e:
+                            st.warning(f"Macro regime gate error: {e}")
+                            # Allow setup creation if regime calculation fails
+                            manual_macro_gate_allowed = True
+                            manual_macro_gate_override_used = False
+                            manual_macro_gate_reason = "regime_error"
 
                     # 5.3 RR25 gate (nearest 2 expiries average; BTC for BTCUSDT, ETH for ETHUSDT)
                     def _rr25_avg_for(asset_symbol):
@@ -1679,6 +1746,26 @@ def run_dashboard_analysis(asset: str, interval: str, days: int, model_type: str
                     except Exception as e:
                         print(f"[dashboard] Failed to get sentiment data: {e}")
                     
+                    # Get macro regime information for logging
+                    macro_regime_info = {}
+                    try:
+                        from src.trading.macro import get_macro_regime
+                        regime_result = get_macro_regime(data)
+                        macro_regime_info = {
+                            "macro_regime_at_creation": regime_result.regime,
+                            "macro_regime_ma200": regime_result.ma200,
+                            "macro_regime_price_vs_ma200_pct": regime_result.price_vs_ma200_pct,
+                            "macro_regime_reason": regime_result.reason,
+                        }
+                    except Exception as e:
+                        print(f"[dashboard] Failed to get macro regime info: {e}")
+                        macro_regime_info = {
+                            "macro_regime_at_creation": "unknown",
+                            "macro_regime_ma200": None,
+                            "macro_regime_price_vs_ma200_pct": None,
+                            "macro_regime_reason": f"Error: {e}",
+                        }
+                    
                     # Create setup row with only SETUP_FIELDS to prevent CSV corruption
                     unique_id = _generate_unique_id(asset, interval, direction, "manual")
                     setup_row = {
@@ -1695,13 +1782,24 @@ def run_dashboard_analysis(asset: str, interval: str, days: int, model_type: str
                         "notional_usd": float(notional),
                         "leverage": float(suggested_leverage),
                         "created_at": created_at.isoformat() if hasattr(created_at, 'isoformat') else str(created_at),
-                        "expires_at": expires_at.isoformat() if hasattr(expires_at, 'isoformat') else str(expires_at),
+                        "expires_at": valid_until.isoformat() if hasattr(valid_until, 'isoformat') else str(valid_until),
+                        "valid_bars": valid_bars,
+                        "validity_source": validity_source,
                         "triggered_at": "",  # Will be set when setup is triggered
                         "status": "pending",
                         "confidence": float(latest_sig.get("confidence", 0.0)),
                         "trigger_rule": trigger_rule,
                         "entry_buffer_bps": float(st.session_state.get("entry_buffer_bps", 5.0)),
                         "origin": "manual",
+                        # Macro regime data
+                        "macro_regime_at_creation": macro_regime_info["macro_regime_at_creation"],
+                        "macro_regime_ma200": macro_regime_info["macro_regime_ma200"],
+                        "macro_regime_price_vs_ma200_pct": macro_regime_info["macro_regime_price_vs_ma200_pct"],
+                        "macro_regime_reason": macro_regime_info["macro_regime_reason"],
+                        # Manual macro gate telemetry
+                        "manual_macro_gate_allowed": manual_macro_gate_allowed,
+                        "manual_macro_gate_override_used": manual_macro_gate_override_used,
+                        "manual_macro_gate_reason": manual_macro_gate_reason,
                     }
                     
                     # Store extra data separately for alert generation (not in CSV)
@@ -1761,13 +1859,13 @@ def run_dashboard_analysis(asset: str, interval: str, days: int, model_type: str
                         return
 
                     # R:R invariant logging (decision time)
-                    if RR_INVARIANT_AVAILABLE:
+                    if getenv_bool("RR_INVARIANT_LOGGING", True):
                         try:
                             # Get ATR as R_used
                             from src.daemon.autosignal import _estimate_atr
                             R_used = _estimate_atr(data)
                             
-                            # Calculate s_planned and t_planned from the setup
+                            # Calculate s_planned and t_planned from the setup (final R-multipliers post caps/optimizers)
                             entry_price = float(setup_levels["entry"])
                             stop_price = float(setup_levels["stop"])
                             target_price = float(setup_levels["target"])
@@ -1780,25 +1878,21 @@ def run_dashboard_analysis(asset: str, interval: str, days: int, model_type: str
                                 t_planned = abs(entry_price - target_price) / R_used
                             
                             # Compute and log invariants at decision time (entry_fill=None)
-                            invariants = compute_rr_invariants(
+                            inv = compute_rr_invariants(
                                 direction=direction,
-                                entry_planned=entry_price,
-                                entry_fill=None,  # Not filled yet
                                 R_used=R_used,
                                 s_planned=s_planned,
                                 t_planned=t_planned,
-                                live_entry=entry_price,
-                                live_stop=stop_price,
-                                live_tp=target_price,
-                                setup_id=setup_row['unique_id'],
-                                tf=interval
+                                entry_planned=entry_price,
+                                entry_fill=None,                 # no fill yet
+                                live_entry=None, live_stop=None, live_tp=None,
+                                setup_id=setup_row['unique_id'], tf=interval,
                             )
+                            rr_invariant_writer.append(inv)     # sidecar write
                             
-                            if invariants:
-                                log_rr_invariants(invariants)
-                                print(f"[dashboard] R:R invariants logged for {setup_row['unique_id']}: "
-                                      f"s_planned={s_planned:.2f}, t_planned={t_planned:.2f}, "
-                                      f"rr_planned={invariants.get('rr_planned', 'N/A'):.2f}")
+                            print(f"[dashboard] R:R invariants logged for {setup_row['unique_id']}: "
+                                  f"s_planned={s_planned:.2f}, t_planned={t_planned:.2f}, "
+                                  f"rr_planned={inv.get('rr_planned', 'N/A'):.2f}")
                         except Exception as e:
                             print(f"[dashboard] R:R invariant logging error: {e}")
 
@@ -1902,10 +1996,17 @@ def run_dashboard_analysis(asset: str, interval: str, days: int, model_type: str
                     cA.metric("Confidence", f"{float(setup_row['confidence']):.0%}")
                     cB.metric("Conf. Badge", cbadge)
                     cC.metric("RR", f"{float(setup_row['rr']):.2f}")
-                    cD.metric("Validity (bars)", f"{int(st.session_state.get('valid_bars', 24))}")
+                    cD.metric("Validity (bars)", f"{setup_row.get('valid_bars', int(st.session_state.get('valid_bars', 24)))}")
 
+                    # Show validity source if available
+                    validity_info = f"Valid until: {setup_row['expires_at']}"
+                    if 'validity_source' in setup_row and setup_row['validity_source'] == 'adaptive':
+                        validity_info += f" (≈{setup_row.get('valid_bars', 'N/A')} bars, adaptive)"
+                    else:
+                        validity_info += f" (≈{setup_row.get('valid_bars', 'N/A')} bars, fixed)"
+                    
                     st.caption(
-                        f"Valid until: {setup_row['expires_at']} • Trigger: {trigger_rule} • Anti-hunt buffer: {setup_row['entry_buffer_bps']} bps"
+                        f"{validity_info} • Trigger: {trigger_rule} • Anti-hunt buffer: {setup_row['entry_buffer_bps']} bps"
                     )
                 else:
                     st.info("No setup created (invalid direction).")

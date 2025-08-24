@@ -51,7 +51,7 @@ except ImportError:
 
 # Import R:R invariant logging
 try:
-    from src.utils.rr_invariants import compute_rr_invariants, log_rr_invariants
+    from src.utils.rr_invariants import compute_rr_invariants, rr_invariant_writer, getenv_bool
     RR_INVARIANT_AVAILABLE = True
 except ImportError:
     RR_INVARIANT_AVAILABLE = False
@@ -222,7 +222,7 @@ def _to_my_tz_index(idx) -> pd.DatetimeIndex:
 SETUP_FIELDS = [
     "id","unique_id","asset","interval","direction","entry","stop","target","rr",
     "size_units","notional_usd","leverage",
-    "created_at","expires_at","triggered_at","status","confidence","trigger_rule","entry_buffer_bps",
+    "created_at","expires_at","valid_bars","validity_source","triggered_at","status","confidence","trigger_rule","entry_buffer_bps",
     "origin"
 ]
 
@@ -330,15 +330,22 @@ def _estimate_atr(df: pd.DataFrame, n: int = 14) -> float:
 # --------- Gates
 def _regime_gate(df: pd.DataFrame, direction: str) -> Optional[str]:
     """Return reason string if blocked, else None."""
-    close = df["close"]
-    ma_fast = close.rolling(50, min_periods=50).mean()
-    ma_slow = close.rolling(200, min_periods=200).mean()
-    if ma_fast.dropna().empty or ma_slow.dropna().empty:
-        return "not enough data for regime"
-    regime = "bull" if ma_fast.iloc[-1] > ma_slow.iloc[-1] else "bear"
-    if (regime == "bull" and direction != "long") or (regime == "bear" and direction != "short"):
-        return f"regime gate: {regime}"
-    return None
+    try:
+        from src.trading.macro import get_macro_regime, is_direction_allowed
+        
+        # Get macro regime using MA200-only filter
+        regime_result = get_macro_regime(df)
+        
+        # Check if direction is allowed
+        is_allowed, reason = is_direction_allowed(regime_result, direction, allow_override=False)
+        
+        if not is_allowed:
+            return f"macro gate: {regime_result.regime} vs {direction} ({regime_result.reason})"
+        
+        return None
+    except Exception as e:
+        print(f"[autosignal] Macro regime gate error: {e}")
+        return None  # Allow if regime calculation fails
 
 def _rr25_avg_for(asset_symbol: str) -> Optional[float]:
     """Read cached deribit rr25 JSON from runs/deribit_rr25_latest_{BTC,ETH}.json and average last 2."""
@@ -573,9 +580,20 @@ def build_autosetup_levels(direction: str, last_price: float, atr: float, rr: fl
             )
             
             if result.success:
-                # Use adaptive selector result for target, but keep our calculated stop
-                target = result.target_price
-                rr = result.rr
+                # Use adaptive selector result, but always apply R:R cap
+                rr_cap = {"15m": 1.5, "1h": 1.7, "4h": 2.0, "1d": 2.8}.get(interval, 1.5)
+                original_rr = result.rr
+                capped_rr = min(original_rr, rr_cap)
+                
+                # Always recalculate target to ensure exact R:R cap compliance
+                target = entry + capped_rr * (entry - stop) if direction == "long" else entry - capped_rr * (stop - entry)
+                
+                if original_rr > rr_cap:
+                    print(f"[autosignal] {interval}: Adaptive selector R:R capped from {original_rr:.2f} to {capped_rr:.2f}")
+                else:
+                    print(f"[autosignal] {interval}: Adaptive selector R:R within cap: {original_rr:.2f} <= {rr_cap}")
+                
+                rr = capped_rr
                 print(f"[autosignal] {interval}: Using adaptive selector - RR: {rr:.2f}, p_hit: {result.p_hit:.3f}, EV_R: {result.ev_r:.4f}")
             else:
                 # Fall back to fixed R:R calculation with timeframe cap
@@ -596,7 +614,7 @@ def build_autosetup_levels(direction: str, last_price: float, atr: float, rr: fl
         capped_rr = min(rr, rr_cap)
         target = entry + capped_rr * (entry - stop) if direction == "long" else entry - capped_rr * (stop - entry)
     
-    # Update R:R to reflect the actual capped value used
+    # Update R:R to reflect the actual value used (for fallback cases only)
     if features is None or not result.success:
         # For fallback cases, calculate the actual R:R used
         if direction == "long":
@@ -1021,14 +1039,55 @@ def autosignal_once(assets: List[str], interval: str, days: int = 120) -> None:
         interval=autosignal_interval, features=features, k_entry=k_entry
     )
     
-    # Add expiry time
-    per_bar_min = {"5m":5, "15m":15, "1h":60, "4h":240, "1d":1440}.get(autosignal_interval, 60)
+    # Add adaptive expiry time
     base_now = pd.to_datetime(_now_local(), utc=True)
     try:
         base_now = base_now.tz_convert(MY_TZ)
     except Exception:
         pass
-    setup["expires_at"] = base_now + pd.Timedelta(minutes=valid_bars * per_bar_min)
+    
+    # Compute adaptive validity based on timeframe, ATR, and macro regime
+    if os.getenv("ADAPTIVE_VALIDITY", "1") == "1":
+        try:
+            from src.utils.validity import compute_adaptive_validity_bars, get_validity_until
+            from src.trading.macro import get_macro_regime
+            
+            # Get macro regime for validity calculation
+            regime_result = get_macro_regime(df)
+            regime = regime_result.regime
+            
+            # Compute adaptive validity bars
+            valid_bars = compute_adaptive_validity_bars(
+                tf=autosignal_interval,
+                R_used=atr_val,  # ATR used for this setup
+                regime=regime,
+                now_ts=base_now
+            )
+            
+            # Compute valid_until timestamp
+            valid_until = get_validity_until(base_now, valid_bars, autosignal_interval)
+            
+            validity_source = "adaptive"
+            
+            print(f"[autosignal] Adaptive validity: {valid_bars} bars (regime: {regime}, ATR: {atr_val:.2f})")
+            
+        except Exception as e:
+            print(f"[autosignal] Adaptive validity failed: {e}, using fallback")
+            # Fallback to legacy fixed bars
+            valid_bars = ui_config.get("valid_bars", VALID_BARS_MIN)
+            valid_bars = max(valid_bars, VALID_BARS_MIN)
+            per_bar_min = {"5m":5, "15m":15, "1h":60, "4h":240, "1d":1440}.get(autosignal_interval, 60)
+            valid_until = base_now + pd.Timedelta(minutes=valid_bars * per_bar_min)
+            validity_source = "fixed"
+    else:
+        # Legacy fixed bars fallback
+        valid_bars = ui_config.get("valid_bars", VALID_BARS_MIN)
+        valid_bars = max(valid_bars, VALID_BARS_MIN)
+        per_bar_min = {"5m":5, "15m":15, "1h":60, "4h":240, "1d":1440}.get(autosignal_interval, 60)
+        valid_until = base_now + pd.Timedelta(minutes=valid_bars * per_bar_min)
+        validity_source = "fixed"
+    
+    setup["expires_at"] = valid_until
 
     # Sizing with UI configuration overrides
     balance = ui_config.get("acct_balance", float(os.getenv("ACCOUNT_BALANCE_USD", "400")))
@@ -1054,6 +1113,26 @@ def autosignal_once(assets: List[str], interval: str, days: int = 120) -> None:
     except Exception as e:
         print(f"[autosignal] Failed to get sentiment data: {e}")
     
+    # Get macro regime information for logging
+    macro_regime_info = {}
+    try:
+        from src.trading.macro import get_macro_regime
+        regime_result = get_macro_regime(df)
+        macro_regime_info = {
+            "macro_regime_at_creation": regime_result.regime,
+            "macro_regime_ma200": regime_result.ma200,
+            "macro_regime_price_vs_ma200_pct": regime_result.price_vs_ma200_pct,
+            "macro_regime_reason": regime_result.reason,
+        }
+    except Exception as e:
+        print(f"[autosignal] Failed to get macro regime info: {e}")
+        macro_regime_info = {
+            "macro_regime_at_creation": "unknown",
+            "macro_regime_ma200": None,
+            "macro_regime_price_vs_ma200_pct": None,
+            "macro_regime_reason": f"Error: {e}",
+        }
+    
     # Append to CSV
     row_id = f"AUTO-{asset}-{autosignal_interval}-{_now_utc().strftime('%Y%m%d_%H%M%S')}"
     unique_id = _generate_unique_id(asset, autosignal_interval, direction, "auto")
@@ -1072,6 +1151,8 @@ def autosignal_once(assets: List[str], interval: str, days: int = 120) -> None:
         "leverage": lev,
         "created_at": _now_local().isoformat() if _now_local() else pd.Timestamp.now(tz='Asia/Kuala_Lumpur').isoformat(),
         "expires_at": setup["expires_at"].isoformat(),
+        "valid_bars": valid_bars,
+        "validity_source": validity_source,
         "triggered_at": "",  # Will be set when setup is triggered
         "status": "pending",
         "confidence": confidence,
@@ -1090,6 +1171,11 @@ def autosignal_once(assets: List[str], interval: str, days: int = 120) -> None:
         "max_pain_distance_pct": maxpain_info.get("max_pain_distance_pct"),
         "max_pain_toward": maxpain_info.get("max_pain_toward"),
         "max_pain_weight": maxpain_info.get("max_pain_weight", 1.0),
+        # Macro regime data
+        "macro_regime_at_creation": macro_regime_info["macro_regime_at_creation"],
+        "macro_regime_ma200": macro_regime_info["macro_regime_ma200"],
+        "macro_regime_price_vs_ma200_pct": macro_regime_info["macro_regime_price_vs_ma200_pct"],
+        "macro_regime_reason": macro_regime_info["macro_regime_reason"],
     }
     
     # Validate setup data before saving
@@ -1129,12 +1215,12 @@ def autosignal_once(assets: List[str], interval: str, days: int = 120) -> None:
         return False
 
     # R:R invariant logging (decision time)
-    if RR_INVARIANT_AVAILABLE:
+    if getenv_bool("RR_INVARIANT_LOGGING", True):
         try:
             # Get ATR as R_used
             R_used = _estimate_atr(df)
             
-            # Calculate s_planned and t_planned from the setup
+            # Calculate s_planned and t_planned from the setup (final R-multipliers post caps/optimizers)
             entry_price = float(row["entry"])
             stop_price = float(row["stop"])
             target_price = float(row["target"])
@@ -1147,25 +1233,21 @@ def autosignal_once(assets: List[str], interval: str, days: int = 120) -> None:
                 t_planned = abs(entry_price - target_price) / R_used
             
             # Compute and log invariants at decision time (entry_fill=None)
-            invariants = compute_rr_invariants(
+            inv = compute_rr_invariants(
                 direction=direction,
-                entry_planned=entry_price,
-                entry_fill=None,  # Not filled yet
                 R_used=R_used,
                 s_planned=s_planned,
                 t_planned=t_planned,
-                live_entry=entry_price,
-                live_stop=stop_price,
-                live_tp=target_price,
-                setup_id=unique_id,
-                tf=autosignal_interval
+                entry_planned=entry_price,
+                entry_fill=None,                 # no fill yet
+                live_entry=None, live_stop=None, live_tp=None,
+                setup_id=unique_id, tf=autosignal_interval,
             )
+            rr_invariant_writer.append(inv)     # sidecar write
             
-            if invariants:
-                log_rr_invariants(invariants)
-                print(f"[autosignal] R:R invariants logged for {unique_id}: "
-                      f"s_planned={s_planned:.2f}, t_planned={t_planned:.2f}, "
-                      f"rr_planned={invariants.get('rr_planned', 'N/A'):.2f}")
+            print(f"[autosignal] R:R invariants logged for {unique_id}: "
+                  f"s_planned={s_planned:.2f}, t_planned={t_planned:.2f}, "
+                  f"rr_planned={inv.get('rr_planned', 'N/A'):.2f}")
         except Exception as e:
             print(f"[autosignal] R:R invariant logging error: {e}")
 

@@ -46,7 +46,7 @@ from src.data.price_feed import get_latest_candle, get_window
 
 # Import R:R invariant logging
 try:
-    from src.utils.rr_invariants import compute_rr_invariants, log_rr_invariants, get_rr_invariants
+    from src.utils.rr_invariants import compute_rr_invariants, rr_invariant_writer, getenv_bool
     RR_INVARIANT_AVAILABLE = True
 except ImportError:
     RR_INVARIANT_AVAILABLE = False
@@ -756,31 +756,49 @@ def track_loop(symbol_default="BTCUSDT", interval_default="5m", sleep_seconds=15
                             _tg_send(f"Setup TRIGGERED{execution_type} {asset} {iv} ({row['direction'].upper()})\\nSetup ID: {row.get('unique_id', 'N/A')}\\nEntry: {row['entry']:.2f} → Triggered @ {float(bar['close']):.2f}\\nStop: {row['stop']:.2f} | Target: {row['target']:.2f}\\nTime: {bar_ts_my.strftime('%Y-%m-%d %H:%M:%S')} MY")
                             
                             # R:R invariant logging (trigger/fill time)
-                            if RR_INVARIANT_AVAILABLE:
+                            if getenv_bool("RR_INVARIANT_LOGGING", True):
                                 try:
-                                    # Get existing invariants from decision time
-                                    existing_invariants = get_rr_invariants(row.get('unique_id', ''))
-                                    if existing_invariants:
-                                        # Update with fill data
-                                        entry_fill = float(bar['close'])
-                                        invariants = compute_rr_invariants(
-                                            direction=str(row['direction']),
-                                            entry_planned=float(existing_invariants.get('entry_planned', row['entry'])),
-                                            entry_fill=entry_fill,
-                                            R_used=float(existing_invariants.get('R_used', 0)),
-                                            s_planned=float(existing_invariants.get('s_planned', 0)),
-                                            t_planned=float(existing_invariants.get('t_planned', 0)),
-                                            live_entry=float(row['entry']),
-                                            live_stop=float(row['stop']),
-                                            live_tp=float(row['target']),
-                                            setup_id=row.get('unique_id', ''),
-                                            tf=str(row['interval'])
-                                        )
-                                        
-                                        if invariants:
-                                            log_rr_invariants(invariants)
-                                            print(f"[tracker] R:R invariants updated for {row.get('unique_id', '')}: "
-                                                  f"entry_fill={entry_fill:.2f}, entry_shift_R={invariants.get('entry_shift_R', 'N/A'):.2f}")
+                                    # Get fill data
+                                    entry_fill = float(bar['close'])
+                                    
+                                    # Calculate R_used, s_planned, t_planned from the setup
+                                    # For now, we'll use a simple ATR estimate - in production this should match the decision-time R_used
+                                    from src.daemon.autosignal import _estimate_atr
+                                    try:
+                                        from src.data.price_feed import get_latest_candle
+                                        latest_data = get_latest_candle(str(row['asset']), str(row['interval']), limit=100)
+                                        R_used = _estimate_atr(latest_data) if latest_data is not None and not latest_data.empty else 0.01
+                                    except:
+                                        R_used = 0.01  # fallback
+                                    
+                                    entry_price = float(row['entry'])
+                                    stop_price = float(row['stop'])
+                                    target_price = float(row['target'])
+                                    
+                                    if str(row['direction']).lower() == "long":
+                                        s_planned = abs(entry_price - stop_price) / R_used
+                                        t_planned = abs(target_price - entry_price) / R_used
+                                    else:  # short
+                                        s_planned = abs(stop_price - entry_price) / R_used
+                                        t_planned = abs(entry_price - target_price) / R_used
+                                    
+                                    # Compute and log invariants at fill time
+                                    inv = compute_rr_invariants(
+                                        direction=str(row['direction']),
+                                        R_used=R_used,
+                                        s_planned=s_planned,
+                                        t_planned=t_planned,
+                                        entry_planned=entry_price,
+                                        entry_fill=entry_fill,          # mandatory
+                                        live_entry=entry_price,         # the values your system already recorded
+                                        live_stop=stop_price,
+                                        live_tp=target_price,
+                                        setup_id=row.get('unique_id', ''), tf=str(row['interval']),
+                                    )
+                                    rr_invariant_writer.append(inv)
+                                    
+                                    print(f"[tracker] R:R invariants updated for {row.get('unique_id', '')}: "
+                                          f"entry_fill={entry_fill:.2f}, entry_shift_R={inv.get('entry_shift_R', 'N/A'):.2f}")
                                 except Exception as e:
                                     print(f"[tracker] R:R invariant logging error: {e}")
                             
@@ -806,31 +824,49 @@ def track_loop(symbol_default="BTCUSDT", interval_default="5m", sleep_seconds=15
                             _tg_send(f"Setup TRIGGERED{execution_type} {asset} {iv} ({row['direction'].upper()})\\nSetup ID: {row.get('unique_id', 'N/A')}\\nEntry: {row['entry']:.2f} → Triggered @ {float(bar['close']):.2f}\\nStop: {row['stop']:.2f} | Target: {row['target']:.2f}\\nTime: {bar_ts_my.strftime('%Y-%m-%d %H:%M:%S')} MY")
                             
                             # R:R invariant logging (trigger/fill time)
-                            if RR_INVARIANT_AVAILABLE:
+                            if getenv_bool("RR_INVARIANT_LOGGING", True):
                                 try:
-                                    # Get existing invariants from decision time
-                                    existing_invariants = get_rr_invariants(row.get('unique_id', ''))
-                                    if existing_invariants:
-                                        # Update with fill data
-                                        entry_fill = float(bar['close'])
-                                        invariants = compute_rr_invariants(
-                                            direction=str(row['direction']),
-                                            entry_planned=float(existing_invariants.get('entry_planned', row['entry'])),
-                                            entry_fill=entry_fill,
-                                            R_used=float(existing_invariants.get('R_used', 0)),
-                                            s_planned=float(existing_invariants.get('s_planned', 0)),
-                                            t_planned=float(existing_invariants.get('t_planned', 0)),
-                                            live_entry=float(row['entry']),
-                                            live_stop=float(row['stop']),
-                                            live_tp=float(row['target']),
-                                            setup_id=row.get('unique_id', ''),
-                                            tf=str(row['interval'])
-                                        )
-                                        
-                                        if invariants:
-                                            log_rr_invariants(invariants)
-                                            print(f"[tracker] R:R invariants updated for {row.get('unique_id', '')}: "
-                                                  f"entry_fill={entry_fill:.2f}, entry_shift_R={invariants.get('entry_shift_R', 'N/A'):.2f}")
+                                    # Get fill data
+                                    entry_fill = float(bar['close'])
+                                    
+                                    # Calculate R_used, s_planned, t_planned from the setup
+                                    # For now, we'll use a simple ATR estimate - in production this should match the decision-time R_used
+                                    from src.daemon.autosignal import _estimate_atr
+                                    try:
+                                        from src.data.price_feed import get_latest_candle
+                                        latest_data = get_latest_candle(str(row['asset']), str(row['interval']), limit=100)
+                                        R_used = _estimate_atr(latest_data) if latest_data is not None and not latest_data.empty else 0.01
+                                    except:
+                                        R_used = 0.01  # fallback
+                                    
+                                    entry_price = float(row['entry'])
+                                    stop_price = float(row['stop'])
+                                    target_price = float(row['target'])
+                                    
+                                    if str(row['direction']).lower() == "long":
+                                        s_planned = abs(entry_price - stop_price) / R_used
+                                        t_planned = abs(target_price - entry_price) / R_used
+                                    else:  # short
+                                        s_planned = abs(stop_price - entry_price) / R_used
+                                        t_planned = abs(entry_price - target_price) / R_used
+                                    
+                                    # Compute and log invariants at fill time
+                                    inv = compute_rr_invariants(
+                                        direction=str(row['direction']),
+                                        R_used=R_used,
+                                        s_planned=s_planned,
+                                        t_planned=t_planned,
+                                        entry_planned=entry_price,
+                                        entry_fill=entry_fill,          # mandatory
+                                        live_entry=entry_price,         # the values your system already recorded
+                                        live_stop=stop_price,
+                                        live_tp=target_price,
+                                        setup_id=row.get('unique_id', ''), tf=str(row['interval']),
+                                    )
+                                    rr_invariant_writer.append(inv)
+                                    
+                                    print(f"[tracker] R:R invariants updated for {row.get('unique_id', '')}: "
+                                          f"entry_fill={entry_fill:.2f}, entry_shift_R={inv.get('entry_shift_R', 'N/A'):.2f}")
                                 except Exception as e:
                                     print(f"[tracker] R:R invariant logging error: {e}")
                             

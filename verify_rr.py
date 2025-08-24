@@ -106,6 +106,68 @@ def synthetic_rr_test(s: float, t: float, R: float, entry: float, direction: str
         'results': results
     }
 
+def load_invariants(path: str) -> Tuple[Optional[pd.DataFrame], str]:
+    """
+    Load R:R invariants from sidecar CSV file.
+    
+    Args:
+        path: Path to invariants CSV file
+    
+    Returns:
+        Tuple of (DataFrame, status) where status is "ok", "missing", or "empty"
+    """
+    invariants_path = Path(path)
+    
+    if not invariants_path.exists():
+        return None, "missing"
+    
+    try:
+        # Read CSV and normalize column names to lowercase
+        df = pd.read_csv(invariants_path)
+        df.columns = df.columns.str.lower()
+        
+        # Filter for fills only (warn_missing_fill == 0)
+        if 'warn_missing_fill' in df.columns:
+            df = df[df['warn_missing_fill'] == 0].copy()
+        
+        if df.empty:
+            return None, "empty"
+        
+        # Coerce numeric fields with error handling
+        numeric_fields = ['rr_planned', 'rr_realized_from_prices', 'rr_realized_from_fill', 'rr_distortion']
+        warning_count = 0
+        
+        for field in numeric_fields:
+            if field in df.columns:
+                try:
+                    df[field] = pd.to_numeric(df[field], errors='coerce')
+                except Exception:
+                    warning_count += 1
+                    print(f"Warning: Could not parse {field} column")
+        
+        # For rr_real, prefer rr_realized_from_prices if finite else rr_realized_from_fill
+        df['rr_real'] = df['rr_realized_from_prices'].fillna(df['rr_realized_from_fill'])
+        
+        # Build result DataFrame with required columns
+        result_df = df[['setup_id', 'tf', 'direction', 'rr_planned', 'rr_real', 'rr_distortion']].copy()
+        
+        # Drop rows with NaN values in required fields
+        result_df = result_df.dropna(subset=['rr_planned', 'rr_real', 'rr_distortion'])
+        
+        if result_df.empty:
+            return None, "empty"
+        
+        print(f"Loaded {len(result_df)} fills from {invariants_path}")
+        if warning_count > 0:
+            print(f"Warning: {warning_count} numeric parsing issues encountered")
+        
+        return result_df, "ok"
+        
+    except Exception as e:
+        print(f"Error loading invariants from {invariants_path}: {e}")
+        return None, "missing"
+
+
 def load_trade_data(runs_dir: str) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame]]:
     """
     Load trade data from CSV files.
@@ -161,6 +223,68 @@ def normalize_column_names(df: pd.DataFrame) -> pd.DataFrame:
             df[new_name] = df[old_name]
     
     return df
+
+def live_audit_invariants(invariants_df: pd.DataFrame, tol_rr: float) -> Dict:
+    """
+    Run live audit using R:R invariants data.
+    
+    Args:
+        invariants_df: Invariants DataFrame
+        tol_rr: R:R tolerance
+    
+    Returns:
+        Dict with audit results
+    """
+    print(f"\n=== LIVE TRADE AUDIT (invariants) ===")
+    print(f"R:R tolerance: {tol_rr:.1%}")
+    print("-" * 80)
+    
+    if invariants_df is None or invariants_df.empty:
+        print("No invariants data available for audit")
+        return {'trades_analyzed': 0, 'within_tolerance': 0, 'flagged_trades': []}
+    
+    # Calculate metrics
+    total = len(invariants_df)
+    ok = sum(invariants_df['rr_distortion'] <= tol_rr)
+    bad = total - ok
+    
+    # Calculate medians
+    median_rr_planned = np.median(invariants_df['rr_planned'])
+    median_rr_realized = np.median(invariants_df['rr_real'])
+    median_distortion = np.median(invariants_df['rr_distortion'])
+    
+    # Print summary
+    print(f"Fills analyzed: {total}")
+    print(f"Within tolerance: {ok} ({ok/total:.1%})")
+    print(f"Median R:R planned: {median_rr_planned:.3f}")
+    print(f"Median R:R realized: {median_rr_realized:.3f}")
+    print(f"Median distortion: {median_distortion:.3f}")
+    print(f"Flagged: {bad}")
+    
+    # Get flagged trades
+    flagged_df = invariants_df[invariants_df['rr_distortion'] > tol_rr].copy()
+    
+    # Print flagged trades table (first 10)
+    if not flagged_df.empty:
+        print(f"\nFlagged trades (first {min(10, len(flagged_df))}):")
+        print(f"{'Setup ID':<20} {'TF':<4} {'Dir':<4} {'RR_plan':<7} {'RR_real':<7} {'Distortion':<10}")
+        print("-" * 60)
+        for _, row in flagged_df.head(10).iterrows():
+            print(f"{str(row['setup_id'])[:19]:<20} {str(row['tf'])[:3]:<4} {str(row['direction'])[:3]:<4} "
+                  f"{row['rr_planned']:<7.3f} {row['rr_real']:<7.3f} {row['rr_distortion']:<10.3f}")
+    
+    return {
+        'trades_analyzed': total,
+        'within_tolerance': ok,
+        'within_tolerance_pct': (ok / total) * 100 if total > 0 else 0,
+        'median_rr_planned': median_rr_planned,
+        'median_rr_realized': median_rr_realized,
+        'median_distortion': median_distortion,
+        'flagged_trades': flagged_df.to_dict('records') if not flagged_df.empty else [],
+        'analyzed_trades': invariants_df.to_dict('records'),
+        'source': 'invariants'
+    }
+
 
 def live_audit(setups_df: pd.DataFrame, trades_df: pd.DataFrame, tol_rr: float) -> Dict:
     """
@@ -357,8 +481,20 @@ def save_verification_report(results: Dict, filename: str = "verification_report
     """
     if 'analyzed_trades' in results and results['analyzed_trades']:
         df = pd.DataFrame(results['analyzed_trades'])
+        
+        # Add source metadata if using invariants
+        if results.get('source') == 'invariants':
+            # Add source column to the DataFrame
+            df['source'] = 'invariants'
+        
         df.to_csv(filename, index=False)
         print(f"\nVerification report saved to {filename}")
+        
+        # Print source info
+        if results.get('source') == 'invariants':
+            print("Source: R:R invariants sidecar")
+        else:
+            print("Source: Legacy setups/trade_history CSVs")
 
 def main():
     parser = argparse.ArgumentParser(description="R:R Verification Harness")
@@ -371,6 +507,10 @@ def main():
                        help="R:R tolerance (default: 0.02)")
     parser.add_argument("--tol-risk", type=float, default=0.02,
                        help="Risk tolerance (default: 0.02)")
+    parser.add_argument("--invariants-csv", default=os.getenv("RR_INVARIANT_SIDECAR_PATH", "runs/rr_invariants.csv"),
+                       help="Path to R:R invariants CSV file")
+    parser.add_argument("--prefer-invariants", type=int, default=1,
+                       help="Prefer invariants over legacy CSVs (1=true, 0=false)")
     
     args = parser.parse_args()
     
@@ -397,10 +537,24 @@ def main():
     # Run live audit if runs directory provided
     live_results = None
     if args.runs_dir:
-        setups_df, trades_df = load_trade_data(args.runs_dir)
-        if setups_df is not None or trades_df is not None:
-            live_results = live_audit(setups_df, trades_df, args.tol_rr)
-            save_verification_report(live_results)
+        # Try invariants path first if preferred
+        if args.prefer_invariants:
+            invariants_df, status = load_invariants(args.invariants_csv)
+            if status == "ok":
+                live_results = live_audit_invariants(invariants_df, args.tol_rr)
+                save_verification_report(live_results)
+            else:
+                print(f"Invariants sidecar {status} — falling back to legacy CSVs")
+                setups_df, trades_df = load_trade_data(args.runs_dir)
+                if setups_df is not None or trades_df is not None:
+                    live_results = live_audit(setups_df, trades_df, args.tol_rr)
+                    save_verification_report(live_results)
+        else:
+            # Use legacy path
+            setups_df, trades_df = load_trade_data(args.runs_dir)
+            if setups_df is not None or trades_df is not None:
+                live_results = live_audit(setups_df, trades_df, args.tol_rr)
+                save_verification_report(live_results)
     
     # Print final summary
     print(f"\n=== FINAL SUMMARY ===")
