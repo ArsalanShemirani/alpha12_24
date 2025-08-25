@@ -1,0 +1,27 @@
+2025-08-25 17:35:43,438 - __main__ - INFO - Starting queue executor stub...
+2025-08-25 17:35:43,439 - __main__ - INFO - Watching directory: runs/command_queue
+2025-08-25 17:35:43,439 - __main__ - INFO - Setups CSV: runs/setups.csv
+2025-08-25 17:37:23,445 - __main__ - INFO - Found 1 job file(s) to process
+2025-08-25 17:37:23,446 - __main__ - INFO - ❌ Processing CANCEL job for setup AUTO-BTCUSDT-4h-SHORT-20250825-0400 requested by MentalNoise
+2025-08-25 17:37:23,454 - __main__ - INFO - Saved setups CSV with 43 rows
+2025-08-25 17:37:23,454 - __main__ - INFO - ✅ Setup AUTO-BTCUSDT-4h-SHORT-20250825-0400 marked as cancelled
+2025-08-25 17:37:23,454 - __main__ - INFO - ✅ Processed and removed job file: runs/command_queue/20250825_173722_cancel_AUTO_BTCUSDT_4h_SHORT_20250825_0400_197804dd.json
+2025-08-25 17:38:34,459 - __main__ - INFO - Found 1 job file(s) to process
+2025-08-25 17:38:34,459 - __main__ - INFO - ❌ Processing CANCEL job for setup AUTO-BTCUSDT-4h-SHORT-20250825-0800 requested by MentalNoise
+2025-08-25 17:38:34,465 - __main__ - INFO - Saved setups CSV with 43 rows
+2025-08-25 17:38:34,465 - __main__ - INFO - ✅ Setup AUTO-BTCUSDT-4h-SHORT-20250825-0800 marked as cancelled
+2025-08-25 17:38:34,465 - __main__ - INFO - ✅ Processed and removed job file: runs/command_queue/20250825_173830_cancel_AUTO_BTCUSDT_4h_SHORT_20250825_0800_11328f90.json
+2025-08-25 17:39:20,469 - __main__ - INFO - Found 2 job file(s) to process
+2025-08-25 17:39:20,469 - __main__ - INFO - ❌ Processing CANCEL job for setup MANUAL-ETHUSDT-4h-LONG-20250824-101821 requested by MentalNoise
+2025-08-25 17:39:20,474 - __main__ - INFO - Saved setups CSV with 43 rows
+2025-08-25 17:39:20,474 - __main__ - INFO - ✅ Setup MANUAL-ETHUSDT-4h-LONG-20250824-101821 marked as cancelled
+2025-08-25 17:39:20,474 - __main__ - INFO - ✅ Processed and removed job file: runs/command_queue/20250825_173917_cancel_MANUAL_ETHUSDT_4h_LONG_20250824_101821_1252bd8d.json
+2025-08-25 17:39:20,474 - __main__ - INFO - ❌ Processing CANCEL job for setup MANUAL-ADAUSDT-5m-SHORT-20250822-201002 requested by MentalNoise
+2025-08-25 17:39:20,479 - __main__ - INFO - Saved setups CSV with 43 rows
+2025-08-25 17:39:20,479 - __main__ - INFO - ✅ Setup MANUAL-ADAUSDT-5m-SHORT-20250822-201002 marked as cancelled
+2025-08-25 17:39:20,479 - __main__ - INFO - ✅ Processed and removed job file: runs/command_queue/20250825_173918_cancel_MANUAL_ADAUSDT_5m_SHORT_20250822_201002_22bca50b.json
+2025-08-25 18:07:26,575 - __main__ - INFO - Found 1 job file(s) to process
+2025-08-25 18:07:26,575 - __main__ - INFO - 🚀 Processing EXECUTE job for setup MANUAL-BTCUSDT-4h-SHORT-20250825-180501 requested by MentalNoise
+2025-08-25 18:07:26,581 - __main__ - INFO - Saved setups CSV with 44 rows
+2025-08-25 18:07:26,581 - __main__ - INFO - ✅ Setup MANUAL-BTCUSDT-4h-SHORT-20250825-180501 marked as executed
+2025-08-25 18:07:26,581 - __main__ - INFO - ✅ Processed and removed job file: runs/command_queue/20250825_180724_exec_MANUAL_BTCUSDT_4h_SHORT_20250825_180501_4ac57924.json

@@ -233,7 +233,7 @@ def _generate_unique_id(asset: str, interval: str, direction: str, origin: str =
     Format: {ORIGIN}-{ASSET}-{TIMEFRAME}-{DIRECTION}-{TIMESTAMP}
     Example: AUTO-ETHUSDT-4h-SHORT-20250822-1201
     """
-    timestamp = _now_utc().strftime('%Y%m%d-%H%M')
+    timestamp = _now_local().strftime('%Y%m%d-%H%M')
     prefix = "AUTO" if origin == "auto" else "MANUAL"
     return f"{prefix}-{asset}-{interval}-{direction.upper()}-{timestamp}"
 
@@ -748,7 +748,7 @@ def _daily_cap_reached(asset: str, interval: str, cap: int) -> bool:
         (df["asset"] == asset) &
         (df["interval"] == interval) &
         (df["created_at"] >= since) &
-        (df["status"].isin(["pending","triggered","target","stop","timeout","cancelled"])) &
+        (df["status"].isin(["pending","triggered","target","stop","timeout"])) &
         (df.get("origin", "auto") == "auto")
     )
     return bool(mask.sum() >= cap)
@@ -786,11 +786,28 @@ def autosignal_once(assets: List[str], interval: str, days: int = 120) -> None:
         ob_dir = None
         gate_ob = ui_config.get("gate_ob", GATE_OB)
         ob_edge_delta = ui_config.get("ob_edge_delta", OB_EDGE_DELTA)
+        depth_topN = ui_config.get("depth_topN", int(os.getenv("OB_DEPTH_TOPN_DEFAULT", "20")))
         
         if gate_ob:
             try:
-                ob = ob_features(sym, top=20)
+                ob = ob_features(sym, top=depth_topN)
                 s_imb = float(ob.get("ob_imb_top20", float("nan")))  # signed −1..+1
+                
+                # Enhanced logging with OB gate metrics
+                if not np.isnan(s_imb):
+                    from src.utils.ob_gate_utils import compute_ob_gate_metrics, log_ob_gate_metrics
+                    
+                    metrics = compute_ob_gate_metrics(
+                        raw_imbalance=s_imb,
+                        ui_delta=ob_edge_delta,
+                        spread_w_bps=float(ob.get("ob_spread_w", 0.0)),
+                        depth_topN=depth_topN,
+                        bidV_topN=float(ob.get("ob_bidv_top20", 0.0)),
+                        askV_topN=float(ob.get("ob_askv_top20", 0.0))
+                    )
+                    
+                    log_ob_gate_metrics(sym, autosignal_interval, metrics, "INFO")
+                
                 ob_dir = _ob_gate(s_imb, edge_delta=ob_edge_delta)
             except Exception as e:
                 print(f"[autosignal] OB fetch error for {sym}: {e}")
@@ -1134,7 +1151,7 @@ def autosignal_once(assets: List[str], interval: str, days: int = 120) -> None:
         }
     
     # Append to CSV
-    row_id = f"AUTO-{asset}-{autosignal_interval}-{_now_utc().strftime('%Y%m%d_%H%M%S')}"
+    row_id = f"AUTO-{asset}-{autosignal_interval}-{_now_local().strftime('%Y%m%d_%H%M%S')}"
     unique_id = _generate_unique_id(asset, autosignal_interval, direction, "auto")
     row = {
         "id": row_id,

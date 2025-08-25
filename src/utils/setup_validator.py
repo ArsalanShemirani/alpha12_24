@@ -111,7 +111,7 @@ def fix_corrupted_setups():
                 asset = row.get('asset', 'UNKNOWN')
                 interval = row.get('interval', '1h')
                 direction = row.get('direction', 'long')
-                unique_id = f"{asset}-{interval}-{direction.upper()}-{datetime.now().strftime('%Y%m%d-%H%M')}"
+                unique_id = f"{asset}-{interval}-{direction.upper()}-{datetime.now(pytz.timezone('Asia/Kuala_Lumpur')).strftime('%Y%m%d-%H%M')}"
                 df.loc[idx, 'unique_id'] = unique_id
                 fixes_applied.append(f"Generated unique_id: {unique_id}")
             except Exception as e:

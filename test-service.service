@@ -1,0 +1,16 @@
+[Unit]
+Description=Test Service
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/alpha12_24
+Environment=TEST_VAR=test_value
+ExecStart=/home/ubuntu/alpha12_24/venv/bin/python3 -c "import os; print('Python works'); print('CWD:', os.getcwd()); print('ENV:', dict(os.environ))"
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

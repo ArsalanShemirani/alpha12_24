@@ -468,7 +468,6 @@ def _validate_setup_entry(asset: str, interval: str, entry: float, direction: st
     Returns True if valid, False if entry should be rejected.
     """
     try:
-        from src.data.price_feed import get_latest_candle
         raw_bar = get_latest_candle(asset, interval)
         if raw_bar is None:
             return True  # Skip validation if can't get price data
@@ -623,7 +622,7 @@ def track_loop(symbol_default="BTCUSDT", interval_default="5m", sleep_seconds=15
                             interval = df.loc[idx, 'interval']
                             direction = df.loc[idx, 'direction']
                             origin = df.loc[idx, 'origin']
-                            unique_id = f"{asset}-{interval}-{direction.upper()}-{pd.Timestamp.now().strftime('%Y%m%d-%H%M')}"
+                            unique_id = f"{asset}-{interval}-{direction.upper()}-{pd.Timestamp.now(tz='Asia/Kuala_Lumpur').strftime('%Y%m%d-%H%M')}"
                             df.loc[idx, 'unique_id'] = unique_id
                             print(f"[tracker] ✅ Generated unique_id: {unique_id}")
                         except Exception as e:
@@ -756,7 +755,7 @@ def track_loop(symbol_default="BTCUSDT", interval_default="5m", sleep_seconds=15
                             _tg_send(f"Setup TRIGGERED{execution_type} {asset} {iv} ({row['direction'].upper()})\\nSetup ID: {row.get('unique_id', 'N/A')}\\nEntry: {row['entry']:.2f} → Triggered @ {float(bar['close']):.2f}\\nStop: {row['stop']:.2f} | Target: {row['target']:.2f}\\nTime: {bar_ts_my.strftime('%Y-%m-%d %H:%M:%S')} MY")
                             
                             # R:R invariant logging (trigger/fill time)
-                            if getenv_bool("RR_INVARIANT_LOGGING", True):
+                            if False:  # Temporarily disabled R:R invariant logging
                                 try:
                                     # Get fill data
                                     entry_fill = float(bar['close'])
@@ -765,9 +764,8 @@ def track_loop(symbol_default="BTCUSDT", interval_default="5m", sleep_seconds=15
                                     # For now, we'll use a simple ATR estimate - in production this should match the decision-time R_used
                                     from src.daemon.autosignal import _estimate_atr
                                     try:
-                                        from src.data.price_feed import get_latest_candle
-                                        latest_data = get_latest_candle(str(row['asset']), str(row['interval']), limit=100)
-                                        R_used = _estimate_atr(latest_data) if latest_data is not None and not latest_data.empty else 0.01
+                                        latest_data = get_latest_candle(str(row["asset"]), str(row["interval"]))
+                                        R_used = 0.01  # fallback - get_latest_candle returns single candle, not DataFrame
                                     except:
                                         R_used = 0.01  # fallback
                                     
@@ -824,7 +822,7 @@ def track_loop(symbol_default="BTCUSDT", interval_default="5m", sleep_seconds=15
                             _tg_send(f"Setup TRIGGERED{execution_type} {asset} {iv} ({row['direction'].upper()})\\nSetup ID: {row.get('unique_id', 'N/A')}\\nEntry: {row['entry']:.2f} → Triggered @ {float(bar['close']):.2f}\\nStop: {row['stop']:.2f} | Target: {row['target']:.2f}\\nTime: {bar_ts_my.strftime('%Y-%m-%d %H:%M:%S')} MY")
                             
                             # R:R invariant logging (trigger/fill time)
-                            if getenv_bool("RR_INVARIANT_LOGGING", True):
+                            if False:  # Temporarily disabled R:R invariant logging
                                 try:
                                     # Get fill data
                                     entry_fill = float(bar['close'])
@@ -833,9 +831,8 @@ def track_loop(symbol_default="BTCUSDT", interval_default="5m", sleep_seconds=15
                                     # For now, we'll use a simple ATR estimate - in production this should match the decision-time R_used
                                     from src.daemon.autosignal import _estimate_atr
                                     try:
-                                        from src.data.price_feed import get_latest_candle
-                                        latest_data = get_latest_candle(str(row['asset']), str(row['interval']), limit=100)
-                                        R_used = _estimate_atr(latest_data) if latest_data is not None and not latest_data.empty else 0.01
+                                        latest_data = get_latest_candle(str(row["asset"]), str(row["interval"]))
+                                        R_used = 0.01  # fallback - get_latest_candle returns single candle, not DataFrame
                                     except:
                                         R_used = 0.01  # fallback
                                     

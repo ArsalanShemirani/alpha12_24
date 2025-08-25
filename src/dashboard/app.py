@@ -336,7 +336,8 @@ def resolve_loader(source_choice: str):
 # --- Setup → Trigger helpers (pending orders with anti stop-hunt) ---
 
 def _setup_now_tag():
-    return time.strftime("%Y%m%d_%H%M%S")
+    # Use pandas timestamp to ensure consistent timezone handling
+    return pd.Timestamp.now(tz='Asia/Kuala_Lumpur').strftime("%Y%m%d_%H%M%S")
 
 def _setups_csv_path():
     return os.path.join(getattr(config, 'runs_dir', 'runs'), 'setups.csv')
@@ -894,17 +895,79 @@ export DASH_AUTH_ENABLED=0
         max_setups_per_day = st.slider("Max setups per 24h", 0, 10, value=int(st.session_state.get("max_setups_per_day", default_max_setups)), key="max_setups_per_day")
         gate_regime = st.toggle("Gate by Macro Regime (MA200-only)", value=st.session_state.get("gate_regime", True), key="gate_regime")
         gate_rr25   = st.toggle("Gate by Deribit RR25 (nearest 2 expiries)", value=st.session_state.get("gate_rr25", True), key="gate_rr25")
-        gate_ob     = st.toggle("Gate by OB Imbalance (top20)", value=st.session_state.get("gate_ob", True), key="gate_ob")
+        gate_ob     = st.toggle("Gate by OB Imbalance", value=st.session_state.get("gate_ob", True), key="gate_ob")
         rr25_thresh = st.number_input("RR25 abs threshold", min_value=0.0, max_value=0.10, value=st.session_state.get("rr25_thresh", 0.00), step=0.01, help="Use 0.00 for zero-cross; 0.02 for stronger bias", key="rr25_thresh")
-        ob_edge_pct = st.slider(
-            "OB Imbalance Δ from edge (%)",
-            min_value=0, max_value=50, value=int(st.session_state.get("ob_edge_delta", 0.20) * 100), step=1,
-            help="Delta from the edges 0 or 1. Example: 20% ⇒ SHORT if raw ≤ 0.20, LONG if raw ≥ 0.80. Internally requires |signed| ≥ 1 − 2·Δ, where Δ = (percent/100).", key="ob_edge_pct"
-        )
+        
+        # OB Gate controls
+        col1, col2 = st.columns(2)
+        with col1:
+            ob_edge_pct = st.slider(
+                "OB Imbalance Δ from edge (%)",
+                min_value=0, max_value=50, value=int(st.session_state.get("ob_edge_delta", 0.20) * 100), step=1,
+                help="Delta from the edges 0 or 1. Example: 20% ⇒ SHORT if raw ≤ 0.20, LONG if raw ≥ 0.80. Internally requires |signed| ≥ 1 − 2·Δ, where Δ = (percent/100).", key="ob_edge_pct"
+            )
+        with col2:
+            depth_topN = st.number_input(
+                "Depth window (top-N levels)",
+                min_value=5, max_value=100, value=int(st.session_state.get("depth_topN", int(os.getenv("OB_DEPTH_TOPN_DEFAULT", "20")))), step=5,
+                help="Number of top order book levels to analyze", key="depth_topN"
+            )
+        
         ob_edge_delta = ob_edge_pct / 100.0
         # Convert edge-delta (distance from 0 or 1) to a signed threshold (−1..+1)
         # Pass condition: |signed_imbalance| ≥ (1 − 2*edge_delta)
         ob_signed_thr = float(max(0.0, min(1.0, 1.0 - 2.0 * ob_edge_delta)))
+        
+        # OB Gate Live Preview
+        if gate_ob:
+            try:
+                from src.data.orderbook_free import ob_features
+                from src.utils.ob_gate_utils import compute_ob_gate_metrics
+                
+                # Get current asset from session state or default
+                current_asset = st.session_state.get("asset", "BTCUSDT")
+                
+                # Fetch current OB data
+                ob = ob_features(symbol=current_asset, top=depth_topN)
+                s_imb = float(ob.get("ob_imb_top20", 0.0))  # signed −1..+1 (field name is fixed but depth is correct)
+                
+                # Compute metrics for preview
+                metrics = compute_ob_gate_metrics(
+                    raw_imbalance=s_imb,
+                    ui_delta=ob_edge_delta,
+                    spread_w_bps=float(ob.get("ob_spread_w", 0.0)),
+                    depth_topN=depth_topN,
+                    bidV_topN=float(ob.get("ob_bidv_top20", 0.0)),
+                    askV_topN=float(ob.get("ob_askv_top20", 0.0))
+                )
+                
+                with st.expander("OB Gate Preview (live)", expanded=True):
+                    st.caption(f"Current orderbook snapshot for {current_asset}")
+                    
+                    # Main metrics row
+                    st.text(
+                        f"raw = {metrics['raw_imbalance']:.3f} | "
+                        f"Δ_norm = {metrics['delta_norm']:.3f} (ui={ob_edge_pct}%) → "
+                        f"net = {metrics['net_imbalance']:.3f} vs thr = {metrics['threshold']:.3f} | "
+                        f"topN = {metrics['depth_topN']}"
+                    )
+                    
+                    # Secondary metrics row
+                    st.text(
+                        f"spread_w_bps ≈ {metrics['spread_w_bps']:.6f} | "
+                        f"bidV_topN = {metrics['bidV_topN']:.4f} | "
+                        f"askV_topN = {metrics['askV_topN']:.4f}"
+                    )
+                    
+                    # Status indicator
+                    if abs(metrics['net_imbalance']) >= metrics['threshold']:
+                        st.success("✅ OB Gate would PASS")
+                    else:
+                        st.error("❌ OB Gate would BLOCK")
+                        
+            except Exception as e:
+                with st.expander("OB Gate Preview (live)", expanded=True):
+                    st.warning(f"Could not fetch orderbook data: {e}")
         # Adaptive confidence gate display
         try:
             from src.trading.adaptive_confidence_gate import adaptive_confidence_gate
@@ -991,6 +1054,7 @@ export DASH_AUTH_ENABLED=0
         # Build UI settings dictionary from current widget values
         ui_settings = dict(
             max_setups_per_day=max_setups_per_day,
+            depth_topN=depth_topN,
             gate_regime=gate_regime, gate_rr25=gate_rr25, gate_ob=gate_ob,
             rr25_thresh=rr25_thresh,
             ob_edge_delta=ob_edge_delta, ob_signed_thr=ob_signed_thr,
@@ -1017,7 +1081,7 @@ export DASH_AUTH_ENABLED=0
         # Live OB imbalance snapshot + hint
         try:
             from src.data.orderbook_free import ob_features as _obf
-            _ob = _obf(symbol=asset, top=20)
+            _ob = _obf(symbol=asset, top=depth_topN)
             if _ob and "ob_imb_top20" in _ob:
                 _s = float(_ob["ob_imb_top20"])  # signed −1..+1
                 _r = 0.5 + 0.5 * _s              # raw 0..1
@@ -1027,7 +1091,7 @@ export DASH_AUTH_ENABLED=0
                 _need = float(st.session_state.get("ob_signed_thr", 1.0 - 2.0 * _edge))
                 _edge_pct = int(round(_edge * 100))
                 st.caption(
-                    f"OB imbalance (top20): signed **{_s:+.3f}** • raw **{_r:.3f}** • Δ from neutral **{_d:.3f}** • {_hint}.  "
+                    f"OB imbalance (top{depth_topN}): signed **{_s:+.3f}** • raw **{_r:.3f}** • Δ from neutral **{_d:.3f}** • {_hint}.  "
                     f"Edge Δ=**{_edge_pct}%** ⇒ pass if raw ≤ **{_edge:.2f}** (SHORT) or ≥ **{1-_edge:.2f}** (LONG). "
                     f"Gate needs |signed| ≥ **{_need:.3f}**."
                 )
@@ -1600,7 +1664,13 @@ def run_dashboard_analysis(asset: str, interval: str, days: int, model_type: str
                     if st.session_state.get("gate_ob", True):
                         try:
                             from src.data.orderbook_free import ob_features
-                            ob = ob_features(symbol=asset, top=20)
+                            from src.utils.ob_gate_utils import compute_ob_gate_metrics, log_ob_gate_metrics, format_ob_gate_block_message
+                            
+                            # Get depth_topN from UI settings
+                            depth_topN = int(st.session_state.get("depth_topN", int(os.getenv("OB_DEPTH_TOPN_DEFAULT", "20"))))
+                            ob_edge_delta = float(st.session_state.get("ob_edge_delta", 0.20))
+                            
+                            ob = ob_features(symbol=asset, top=depth_topN)
                             if not ob:
                                 st.info("Setup blocked: OB features unavailable.")
                                 return
@@ -1608,13 +1678,30 @@ def run_dashboard_analysis(asset: str, interval: str, days: int, model_type: str
                             if np.isnan(s_imb):
                                 st.caption("OB imbalance not available → treating as neutral (no block).")
                             else:
+                                # Enhanced logging with OB gate metrics
+                                metrics = compute_ob_gate_metrics(
+                                    raw_imbalance=s_imb,
+                                    ui_delta=ob_edge_delta,
+                                    spread_w_bps=float(ob.get("ob_spread_w", 0.0)),
+                                    depth_topN=depth_topN,
+                                    bidV_topN=float(ob.get("ob_bidv_top20", 0.0)),
+                                    askV_topN=float(ob.get("ob_askv_top20", 0.0))
+                                )
+                                
+                                # Log the metrics
+                                log_ob_gate_metrics(asset, interval, metrics, "INFO")
+                                
                                 # Symmetric distance threshold: |signed| ≥ ob_signed_thr
-                                thr_s = float(st.session_state.get("ob_signed_thr", 1.0 - 2.0 * float(st.session_state.get("ob_edge_delta", 0.20))))
+                                thr_s = metrics["threshold"]
                                 if abs(s_imb) < thr_s:
-                                    st.info(
-                                        f"Setup blocked by OB gate: need |signed imbalance| ≥ {thr_s:.3f}. "
-                                        f"Got {s_imb:+.3f} (raw {(0.5+0.5*s_imb):.3f}, Δ {abs(0.5+0.5*s_imb-0.5):.3f})."
+                                    block_msg = format_ob_gate_block_message(
+                                        signed_imbalance=s_imb,
+                                        raw_imbalance=s_imb,
+                                        delta_norm=metrics["delta_norm"],
+                                        ui_delta=ob_edge_delta,
+                                        threshold=thr_s
                                     )
+                                    st.info(block_msg)
                                     st.caption(f"OB debug → spread_w (bps)≈{ob.get('ob_spread_w', float('nan')):,.6f}, bidV_top20={ob.get('ob_bidv_top20')}, askV_top20={ob.get('ob_askv_top20')}")
                                     return
                                 # Directional consistency: require sign to match signal
@@ -1649,7 +1736,7 @@ def run_dashboard_analysis(asset: str, interval: str, days: int, model_type: str
                                     (df_hist["asset"]==asset) &
                                     (df_hist["interval"]==interval) &
                                     (df_hist["created_at"]>=since) &
-                                    (df_hist["status"].isin(["pending","triggered","target","stop","timeout","cancelled"])) &
+                                    (df_hist["status"].isin(["pending","triggered","target","stop","timeout"])) &
                                     (df_hist.get("origin","auto")=="auto")
                                 )
                                 n = int(mask.sum())
