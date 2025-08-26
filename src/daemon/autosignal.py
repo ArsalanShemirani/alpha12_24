@@ -1056,6 +1056,91 @@ def autosignal_once(assets: List[str], interval: str, days: int = 120) -> None:
         interval=autosignal_interval, features=features, k_entry=k_entry
     )
     
+    # S/R Zone Analysis and Target Adjustment
+    zone_features = {}
+    zone_adjustment_info = {}
+    tp_adjustment_info = {}
+    
+    try:
+        from src.utils.sr_zones import nearest_zone, calculate_zone_adjustment, adjust_target_for_zone
+        
+        # Get zone information
+        zone_info = nearest_zone(asset, autosignal_interval, price, pd.Timestamp.now(tz='Asia/Kuala_Lumpur'))
+        
+        # Extract zone features for model (if needed for future enhancement)
+        zone_features = {
+            "zone_type_onehot": 1.0 if zone_info["zone_type"] in ["support", "resistance"] else 0.0,
+            "zone_dist_R": zone_info["zone_dist_R"] if zone_info["zone_dist_R"] is not None else 999.0,
+            "zone_score": zone_info["zone_score"] if zone_info["zone_score"] is not None else 0.0,
+            "confluence_score": zone_info["confluence_score"] if zone_info["confluence_score"] is not None else 0.0,
+            "rev_confirm": 0.0  # Placeholder - can be enhanced with actual confirmation logic
+        }
+        
+        # Calculate zone adjustment to p_hit (if adaptive selector was used)
+        if features is not None:
+            try:
+                from src.trading.adaptive_selector import adaptive_selector
+                
+                # Prepare features (no macro inputs)
+                clean_features = {k: v for k, v in features.items() 
+                                if not k.startswith(('vix_', 'dxy_', 'gold_', 'treasury_', 'inflation_', 'fed_'))}
+                
+                result = adaptive_selector.select_optimal_stop_target(
+                    features=clean_features,
+                    atr=atr_val,
+                    timeframe=autosignal_interval,
+                    entry_price=setup["entry"],
+                    direction=direction
+                )
+                
+                if result.success:
+                    p_hit_base = result.p_hit
+                    p_hit_final, zone_adjustment_info = calculate_zone_adjustment(
+                        zone_info, direction, p_hit_base, atr_val
+                    )
+                    
+                    # Log zone analysis
+                    if zone_info["zone_type"] != "none":
+                        print(f"[autosignal] [sr_zone] sym={asset} tf={autosignal_interval} dir={direction} "
+                              f"zone_type={zone_info['zone_type']} zone_dist_R={zone_info['zone_dist_R']:.3f} "
+                              f"zone_score={zone_info['zone_score']:.3f} confluence={zone_info['confluence_score']:.3f} "
+                              f"p_hit_base={p_hit_base:.3f} p_hit_final={p_hit_final:.3f} "
+                              f"delta_p={zone_adjustment_info['delta_p']:.4f} reason={zone_adjustment_info['reason']}")
+            except Exception as e:
+                print(f"[autosignal] Zone p_hit adjustment failed: {e}")
+        
+        # Adjust target for zone front-running
+        tp_raw = setup["target"]
+        tp_adj, tp_adjustment_info = adjust_target_for_zone(
+            zone_info, direction, tp_raw, atr_val
+        )
+        
+        if tp_adjustment_info["tp_adjusted"]:
+            # Recalculate R:R to maintain invariant
+            if direction == "long":
+                new_rr = (tp_adj - setup["entry"]) / (setup["entry"] - setup["stop"])
+            else:
+                new_rr = (setup["entry"] - tp_adj) / (setup["stop"] - setup["entry"])
+            
+            setup["target"] = tp_adj
+            setup["rr"] = new_rr
+            
+            print(f"[autosignal] [sr_zone] TP adjusted: {tp_raw:.2f} → {tp_adj:.2f} "
+                  f"(trim: {tp_adjustment_info['trim_distance']:.2f}) RR: {setup['rr']:.2f}")
+        
+    except Exception as e:
+        print(f"[autosignal] SR zone analysis failed: {e}")
+        # Fallback to original setup
+        zone_features = {
+            "zone_type_onehot": 0.0,
+            "zone_dist_R": 999.0,
+            "zone_score": 0.0,
+            "confluence_score": 0.0,
+            "rev_confirm": 0.0
+        }
+        zone_adjustment_info = {"delta_p": 0.0, "reason": "error"}
+        tp_adjustment_info = {"tp_adjusted": False, "reason": "error"}
+    
     # Add adaptive expiry time
     base_now = pd.to_datetime(_now_local(), utc=True)
     try:
@@ -1096,6 +1181,12 @@ def autosignal_once(assets: List[str], interval: str, days: int = 120) -> None:
             per_bar_min = {"5m":5, "15m":15, "1h":60, "4h":240, "1d":1440}.get(autosignal_interval, 60)
             valid_until = base_now + pd.Timedelta(minutes=valid_bars * per_bar_min)
             validity_source = "fixed"
+            
+            # Ensure valid_until is not None
+            if valid_until is None:
+                print(f"[autosignal] WARNING: valid_until is None after fallback, using default")
+                valid_until = base_now + pd.Timedelta(hours=24)  # 24 hour default
+                validity_source = "default"
     else:
         # Legacy fixed bars fallback
         valid_bars = ui_config.get("valid_bars", VALID_BARS_MIN)
@@ -1103,6 +1194,18 @@ def autosignal_once(assets: List[str], interval: str, days: int = 120) -> None:
         per_bar_min = {"5m":5, "15m":15, "1h":60, "4h":240, "1d":1440}.get(autosignal_interval, 60)
         valid_until = base_now + pd.Timedelta(minutes=valid_bars * per_bar_min)
         validity_source = "fixed"
+        
+        # Ensure valid_until is not None
+        if valid_until is None:
+            print(f"[autosignal] WARNING: valid_until is None in legacy mode, using default")
+            valid_until = base_now + pd.Timedelta(hours=24)  # 24 hour default
+            validity_source = "default"
+    
+    # Final safety check to ensure valid_until is never None
+    if valid_until is None:
+        print(f"[autosignal] CRITICAL: valid_until is None, using emergency default")
+        valid_until = base_now + pd.Timedelta(hours=24)  # 24 hour emergency default
+        validity_source = "emergency"
     
     setup["expires_at"] = valid_until
 
@@ -1153,6 +1256,7 @@ def autosignal_once(assets: List[str], interval: str, days: int = 120) -> None:
     # Append to CSV
     row_id = f"AUTO-{asset}-{autosignal_interval}-{_now_local().strftime('%Y%m%d_%H%M%S')}"
     unique_id = _generate_unique_id(asset, autosignal_interval, direction, "auto")
+    
     row = {
         "id": row_id,
         "unique_id": unique_id,
@@ -1167,7 +1271,7 @@ def autosignal_once(assets: List[str], interval: str, days: int = 120) -> None:
         "notional_usd": notional,
         "leverage": lev,
         "created_at": _now_local().isoformat() if _now_local() else pd.Timestamp.now(tz='Asia/Kuala_Lumpur').isoformat(),
-        "expires_at": setup["expires_at"].isoformat(),
+        "expires_at": setup["expires_at"].isoformat() if setup["expires_at"] is not None else "",
         "valid_bars": valid_bars,
         "validity_source": validity_source,
         "triggered_at": "",  # Will be set when setup is triggered
@@ -1193,6 +1297,16 @@ def autosignal_once(assets: List[str], interval: str, days: int = 120) -> None:
         "macro_regime_ma200": macro_regime_info["macro_regime_ma200"],
         "macro_regime_price_vs_ma200_pct": macro_regime_info["macro_regime_price_vs_ma200_pct"],
         "macro_regime_reason": macro_regime_info["macro_regime_reason"],
+        # S/R Zone data
+        "sr_zone_type": zone_features.get("zone_type_onehot", 0.0),
+        "sr_zone_dist_R": zone_features.get("zone_dist_R", 999.0),
+        "sr_zone_score": zone_features.get("zone_score", 0.0),
+        "sr_zone_confluence_score": zone_features.get("confluence_score", 0.0),
+        "sr_zone_rev_confirm": zone_features.get("rev_confirm", 0.0),
+        "sr_zone_delta_p": zone_adjustment_info.get("delta_p", 0.0),
+        "sr_zone_adjustment_reason": zone_adjustment_info.get("reason", "none"),
+        "sr_zone_tp_adjusted": tp_adjustment_info.get("tp_adjusted", False),
+        "sr_zone_tp_adjustment_reason": tp_adjustment_info.get("reason", "none"),
     }
     
     # Validate setup data before saving
@@ -1230,6 +1344,46 @@ def autosignal_once(assets: List[str], interval: str, days: int = 120) -> None:
         print(error_msg)
         _send_telegram(f"🚨 SETUP SAVE FAILED\n{error_msg}\nSetup data: {row}")
         return False
+
+    # Setup Resolution - Handle overlapping setups
+    try:
+        from src.utils.setup_resolver import resolve_overlapping_setups, apply_resolution_result, log_resolution_alert
+        
+        result = resolve_overlapping_setups(
+            symbol=asset,
+            timeframe=autosignal_interval,
+            direction=direction,
+            current_time=pd.Timestamp.now(tz='Asia/Kuala_Lumpur')
+        )
+        
+        if result:
+            # Apply resolution (update statuses)
+            if apply_resolution_result(result):
+                # Log resolution alert
+                log_resolution_alert(result, asset, autosignal_interval, direction)
+                
+                # Send Telegram alert for resolution
+                if result.resolution_type == "superseded":
+                    loser_info = ", ".join([f"{lid}(w={lw:.2f})" for lid, lw in zip(result.loser_ids, result.loser_weights)])
+                    telegram_msg = f"🔄 Setup Resolution\n{asset} {autosignal_interval} {direction.upper()}\nSuperseded: {loser_info}\nWinner: {result.winner_id}(w={result.winner_weight:.2f})"
+                else:  # canceled
+                    active_losers = []
+                    for lid, lw in zip(result.loser_ids, result.loser_weights):
+                        active_losers.append(f"{lid}(active, w={lw:.2f})")
+                    active_info = ", ".join(active_losers)
+                    telegram_msg = f"⚠️ Stronger signal detected\n{asset} {autosignal_interval} {direction.upper()}\nCanceled: {active_info}\nReplaced by: {result.winner_id}(pending, w={result.winner_weight:.2f})"
+                
+                _send_telegram(telegram_msg)
+                
+                print(f"[autosignal] Setup resolution applied: {result.resolution_type} {len(result.loser_ids)} setups")
+            else:
+                print(f"[autosignal] Setup resolution failed to apply")
+        else:
+            print(f"[autosignal] No overlapping setups to resolve")
+            
+    except Exception as e:
+        print(f"[autosignal] Setup resolution error: {e}")
+        # Don't fail the setup creation due to resolution errors
 
     # R:R invariant logging (decision time)
     if getenv_bool("RR_INVARIANT_LOGGING", True):

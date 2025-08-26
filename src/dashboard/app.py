@@ -1487,6 +1487,36 @@ def run_dashboard_analysis(asset: str, interval: str, days: int, model_type: str
                     direction=direction, last_price=last_price, atr=atr_val, rr=rr, interval=interval, features=features, k_entry=k_entry
                 )
                 
+                # S/R Zone Target Adjustment
+                try:
+                    from src.utils.sr_zones import adjust_target_for_zone, nearest_zone
+                    
+                    # Get zone information for target adjustment
+                    zone_info = nearest_zone(asset, interval, last_price, pd.Timestamp.now(tz='Asia/Kuala_Lumpur'))
+                    
+                    # Adjust target for zone front-running
+                    tp_raw = setup_levels["target"]
+                    tp_adj, tp_adjustment_info = adjust_target_for_zone(
+                        zone_info, direction, tp_raw, atr_val
+                    )
+                    
+                    if tp_adjustment_info["tp_adjusted"]:
+                        # Recalculate R:R to maintain invariant
+                        if direction == "long":
+                            new_rr = (tp_adj - setup_levels["entry"]) / (setup_levels["entry"] - setup_levels["stop"])
+                        else:
+                            new_rr = (setup_levels["entry"] - tp_adj) / (setup_levels["stop"] - setup_levels["entry"])
+                        
+                        setup_levels["target"] = tp_adj
+                        setup_levels["rr"] = new_rr
+                        
+                        st.info(f"SR Zone TP adjustment: {tp_raw:.2f} → {tp_adj:.2f} "
+                               f"(trim: {tp_adjustment_info['trim_distance']:.2f}) RR: {new_rr:.2f}")
+                        
+                except Exception as e:
+                    st.warning(f"SR zone target adjustment failed: {e}")
+                    tp_adjustment_info = {"tp_adjusted": False, "reason": "error"}
+                
                 # Debug: Log entry price calculation
                 print(f"[dashboard] Manual setup entry calculation:")
                 print(f"  Current market price: {last_price:.2f}")
@@ -1660,7 +1690,51 @@ def run_dashboard_analysis(asset: str, interval: str, days: int, model_type: str
                                 st.info(f"Setup blocked by RR25 gate (rr={rr:.4f} > -{thr:.4f}).")
                                 return
 
-                    # 5.4 Order-book imbalance gate
+                    # 5.4 S/R Zone Analysis (Feature Augmentation)
+                    zone_features = {}
+                    zone_adjustment_info = {}
+                    tp_adjustment_info = {}
+                    
+                    try:
+                        from src.utils.sr_zones import nearest_zone, calculate_zone_adjustment, adjust_target_for_zone
+                        
+                        # Get zone information
+                        zone_info = nearest_zone(asset, interval, last_price, pd.Timestamp.now(tz='Asia/Kuala_Lumpur'))
+                        
+                        # Extract zone features for model
+                        zone_features = {
+                            "zone_type_onehot": 1.0 if zone_info["zone_type"] in ["support", "resistance"] else 0.0,
+                            "zone_dist_R": zone_info["zone_dist_R"] if zone_info["zone_dist_R"] is not None else 999.0,
+                            "zone_score": zone_info["zone_score"] if zone_info["zone_score"] is not None else 0.0,
+                            "confluence_score": zone_info["confluence_score"] if zone_info["confluence_score"] is not None else 0.0,
+                            "rev_confirm": 0.0  # Placeholder - can be enhanced with actual confirmation logic
+                        }
+                        
+                        # Calculate zone adjustment to p_hit (placeholder for future enhancement)
+                        p_hit_base = 0.5  # Default p_hit for manual setups
+                        p_hit_final, zone_adjustment_info = calculate_zone_adjustment(
+                            zone_info, direction, p_hit_base, atr_val
+                        )
+                        
+                        # Log zone analysis
+                        if zone_info["zone_type"] != "none":
+                            st.info(f"SR Zone Analysis: {zone_info['zone_type']} at {zone_info['zone_dist_R']:.3f}R "
+                                   f"(score: {zone_info['zone_score']:.3f}, confluence: {zone_info['confluence_score']:.3f})")
+                        
+                    except Exception as e:
+                        st.warning(f"SR zone analysis failed: {e}")
+                        # Fallback to original setup
+                        zone_features = {
+                            "zone_type_onehot": 0.0,
+                            "zone_dist_R": 999.0,
+                            "zone_score": 0.0,
+                            "confluence_score": 0.0,
+                            "rev_confirm": 0.0
+                        }
+                        zone_adjustment_info = {"delta_p": 0.0, "reason": "error"}
+                        tp_adjustment_info = {"tp_adjusted": False, "reason": "error"}
+                    
+                    # 5.5 Order-book imbalance gate
                     if st.session_state.get("gate_ob", True):
                         try:
                             from src.data.orderbook_free import ob_features
@@ -1887,6 +1961,16 @@ def run_dashboard_analysis(asset: str, interval: str, days: int, model_type: str
                         "manual_macro_gate_allowed": manual_macro_gate_allowed,
                         "manual_macro_gate_override_used": manual_macro_gate_override_used,
                         "manual_macro_gate_reason": manual_macro_gate_reason,
+                        # S/R Zone data
+                        "sr_zone_type": zone_features.get("zone_type_onehot", 0.0),
+                        "sr_zone_dist_R": zone_features.get("zone_dist_R", 999.0),
+                        "sr_zone_score": zone_features.get("zone_score", 0.0),
+                        "sr_zone_confluence_score": zone_features.get("confluence_score", 0.0),
+                        "sr_zone_rev_confirm": zone_features.get("rev_confirm", 0.0),
+                        "sr_zone_delta_p": zone_adjustment_info.get("delta_p", 0.0),
+                        "sr_zone_adjustment_reason": zone_adjustment_info.get("reason", "none"),
+                        "sr_zone_tp_adjusted": tp_adjustment_info.get("tp_adjusted", False),
+                        "sr_zone_tp_adjustment_reason": tp_adjustment_info.get("reason", "none"),
                     }
                     
                     # Store extra data separately for alert generation (not in CSV)
@@ -1944,6 +2028,44 @@ def run_dashboard_analysis(asset: str, interval: str, days: int, model_type: str
                         print(error_msg)
                         st.error(f"❌ Failed to save setup: {e}")
                         return
+
+                    # Setup Resolution - Handle overlapping setups
+                    try:
+                        from src.utils.setup_resolver import resolve_overlapping_setups, apply_resolution_result, log_resolution_alert
+                        
+                        result = resolve_overlapping_setups(
+                            symbol=asset,
+                            timeframe=interval,
+                            direction=direction,
+                            current_time=pd.Timestamp.now(tz='Asia/Kuala_Lumpur')
+                        )
+                        
+                        if result:
+                            # Apply resolution (update statuses)
+                            if apply_resolution_result(result):
+                                # Log resolution alert
+                                log_resolution_alert(result, asset, interval, direction)
+                                
+                                # Show resolution info in dashboard
+                                if result.resolution_type == "superseded":
+                                    loser_info = ", ".join([f"{lid}(w={lw:.2f})" for lid, lw in zip(result.loser_ids, result.loser_weights)])
+                                    st.info(f"🔄 Setup Resolution: Superseded {loser_info} with {result.winner_id}(w={result.winner_weight:.2f})")
+                                else:  # canceled
+                                    active_losers = []
+                                    for lid, lw in zip(result.loser_ids, result.loser_weights):
+                                        active_losers.append(f"{lid}(active, w={lw:.2f})")
+                                    active_info = ", ".join(active_losers)
+                                    st.warning(f"⚠️ Stronger signal detected: Canceled {active_info} and replaced by {result.winner_id}(pending, w={result.winner_weight:.2f})")
+                                
+                                print(f"[dashboard] Setup resolution applied: {result.resolution_type} {len(result.loser_ids)} setups")
+                            else:
+                                print(f"[dashboard] Setup resolution failed to apply")
+                        else:
+                            print(f"[dashboard] No overlapping setups to resolve")
+                            
+                    except Exception as e:
+                        print(f"[dashboard] Setup resolution error: {e}")
+                        # Don't fail the setup creation due to resolution errors
 
                     # R:R invariant logging (decision time)
                     if getenv_bool("RR_INVARIANT_LOGGING", True):
@@ -2651,12 +2773,13 @@ def display_backtest_interface(asset, interval, source_choice, model_summary, co
                         confidence_str = str(avg_confidence) if avg_confidence is not None else "N/A"
                     st.metric("Avg Confidence", confidence_str)
                 
+                # Create setups_df_copy for analysis (needed for both asset and direction performance)
+                setups_df_copy = setups_df.copy()
+                setups_df_copy['confidence_numeric'] = pd.to_numeric(setups_df_copy['confidence'], errors='coerce')
+                
                 # Performance by asset
                 if len(setups_df) > 1:
                     st.subheader("Performance by Asset")
-                    # Convert confidence to numeric before aggregation
-                    setups_df_copy = setups_df.copy()
-                    setups_df_copy['confidence_numeric'] = pd.to_numeric(setups_df_copy['confidence'], errors='coerce')
                     
                     asset_performance = setups_df_copy.groupby('asset').agg({
                         'status': lambda x: (x == 'target').sum() / (x.isin(['target', 'stop', 'timeout'])).sum() if (x.isin(['target', 'stop', 'timeout'])).sum() > 0 else 0,
@@ -2678,7 +2801,9 @@ def display_backtest_interface(asset, interval, source_choice, model_summary, co
                 
                 # Performance by confidence levels
                 st.subheader("Performance by Confidence Level")
-                setups_df['confidence_bin'] = pd.cut(setups_df['confidence'], 
+                # Convert confidence to numeric before binning
+                confidence_numeric = pd.to_numeric(setups_df['confidence'], errors='coerce')
+                setups_df['confidence_bin'] = pd.cut(confidence_numeric, 
                                                    bins=[0, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0], 
                                                    labels=['<50%', '50-60%', '60-70%', '70-80%', '80-90%', '90%+'])
                 
@@ -2961,12 +3086,12 @@ def display_setups_monitor(asset: str, interval: str, data: pd.DataFrame):
 
     # ---------- summary counts ----------
     total = len(df_view)
-    statuses = ["executed", "pending", "triggered", "target", "stop", "timeout", "cancelled", "manual_exit"]
+    statuses = ["executed", "pending", "triggered", "target", "stop", "timeout", "cancelled", "manual_exit", "superseded", "canceled_by_resolver"]
     counts = {s: int((df_view["status"] == s).sum()) for s in statuses}
 
     # Display status summary with colors
     st.markdown("### 📈 Setup Status Summary")
-    col1, col2, col3, col4, col5, col6, col7, col8, col9 = st.columns(9)
+    col1, col2, col3, col4, col5, col6, col7, col8, col9, col10, col11 = st.columns(11)
     
     col1.metric("Total", total, delta=None)
     col2.metric("🟠 Executed", counts['executed'], delta=None)
@@ -2977,6 +3102,8 @@ def display_setups_monitor(asset: str, interval: str, data: pd.DataFrame):
     col7.metric("🟣 Timeout", counts['timeout'], delta=None)
     col8.metric("🎯 Manual Exit", counts['manual_exit'], delta=None)
     col9.metric("⚫ Cancelled", counts['cancelled'], delta=None)
+    col10.metric("🔄 Superseded", counts['superseded'], delta=None)
+    col11.metric("⚠️ Resolver Canceled", counts['canceled_by_resolver'], delta=None)
 
     st.markdown("---")
 
@@ -3255,6 +3382,27 @@ def display_setups_monitor(asset: str, interval: str, data: pd.DataFrame):
         
         st.dataframe(cancelled[cancelled_cols], use_container_width=True, hide_index=True)
         st.caption(f"📊 {len(cancelled)} cancelled setups")
+
+    # 5. RESOLVER-AFFECTED SETUPS
+    resolver_affected = df_view[df_view["status"].isin(["superseded", "canceled_by_resolver"])].copy()
+    if not resolver_affected.empty:
+        st.markdown("#### 🔄 **RESOLVER-AFFECTED SETUPS**")
+        st.caption("These setups were superseded or canceled by the setup resolver due to overlapping setups with higher weight or recency.")
+        
+        resolver_cols = ["id", "asset", "interval", "direction", "entry", "stop", "target", "rr", "confidence", "created_at", "status", "superseded_by", "canceled_by"]
+        resolver_cols = [col for col in resolver_cols if col in resolver_affected.columns]
+        
+        if "created_at" in resolver_affected.columns:
+            resolver_affected = resolver_affected.sort_values("created_at", ascending=False)
+        
+        # Format the display
+        display_df = resolver_affected[resolver_cols].copy()
+        for col in ["created_at"]:
+            if col in display_df.columns:
+                display_df[col] = display_df[col].apply(lambda x: x.strftime("%Y-%m-%d %H:%M:%S") if pd.notna(x) else "N/A")
+        
+        st.dataframe(display_df, use_container_width=True, hide_index=True)
+        st.caption(f"📊 {len(resolver_affected)} resolver-affected setups")
 
     # Telegram alerts status
     st.markdown("---")
@@ -4352,7 +4500,9 @@ def display_trade_history_interface(asset, interval, config):
                 
                 # Performance by confidence levels
                 st.write("**Performance by Confidence Level:**")
-                setups_df_filtered['confidence_bin'] = pd.cut(setups_df_filtered['confidence'], 
+                # Convert confidence to numeric before binning
+                confidence_numeric_filtered = pd.to_numeric(setups_df_filtered['confidence'], errors='coerce')
+                setups_df_filtered['confidence_bin'] = pd.cut(confidence_numeric_filtered, 
                                                              bins=[0, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0], 
                                                              labels=['<50%', '50-60%', '60-70%', '70-80%', '80-90%', '90%+'])
                 

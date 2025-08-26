@@ -683,6 +683,17 @@ def track_loop(symbol_default="BTCUSDT", interval_default="5m", sleep_seconds=15
                     row = df.loc[idx]
                     status = str(row["status"]) if pd.notna(row["status"]) else "pending"
 
+                    # Check if setup should be skipped (superseded or canceled by resolver)
+                    try:
+                        from src.utils.setup_resolver import should_skip_execution
+                        setup_id = str(row.get("unique_id", row.get("id", "")))
+                        if should_skip_execution(setup_id):
+                            print(f"[tracker] Setup {setup_id} skipped - superseded or canceled by resolver")
+                            continue
+                    except Exception as e:
+                        print(f"[tracker] Error checking setup skip status: {e}")
+                        # Continue with tracking if resolver check fails
+
                     # expiry check for pending
                     if status == "pending":
                         exp = pd.to_datetime(row["expires_at"], errors="coerce", utc=True)
@@ -742,7 +753,9 @@ def track_loop(symbol_default="BTCUSDT", interval_default="5m", sleep_seconds=15
                             df.loc[idx, "status"] = "triggered"
                             df.loc[idx, "trigger_ts"] = str(bar_ts)
                             df.loc[idx, "trigger_price"] = str(float(bar["close"]))  # Convert to string to avoid dtype issues
-                            df.loc[idx, "triggered_at"] = str(bar_ts.tz_convert(MY_TZ))  # Add triggered_at timestamp
+                            # Use current time for triggered_at, not candle timestamp
+                            current_time = pd.Timestamp.now(tz=MY_TZ)
+                            df.loc[idx, "triggered_at"] = str(current_time)  # Add triggered_at timestamp
                             if pd.isna(row.get("trigger_price")) and "trigger_price" in df.columns:
                                 df.loc[idx, "price_at_trigger"] = float(bar["close"])  # alias field for logs
                             # Convert to Malaysian time for Telegram alert
@@ -811,7 +824,9 @@ def track_loop(symbol_default="BTCUSDT", interval_default="5m", sleep_seconds=15
                             df.loc[idx, "status"] = "triggered"
                             df.loc[idx, "trigger_ts"] = str(bar_ts)
                             df.loc[idx, "trigger_price"] = str(float(bar["close"]))  # Convert to string to avoid dtype issues
-                            df.loc[idx, "triggered_at"] = str(bar_ts.tz_convert(MY_TZ))  # Add triggered_at timestamp
+                            # Use current time for triggered_at, not candle timestamp
+                            current_time = pd.Timestamp.now(tz=MY_TZ)
+                            df.loc[idx, "triggered_at"] = str(current_time)  # Add triggered_at timestamp
                             if pd.isna(row.get("trigger_price")) and "trigger_price" in df.columns:
                                 df.loc[idx, "price_at_trigger"] = float(bar["close"])  # alias field for logs
                             # Convert to Malaysian time for Telegram alert

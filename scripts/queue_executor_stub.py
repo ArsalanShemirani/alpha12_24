@@ -82,6 +82,16 @@ def process_execute_job(job_data: Dict[str, Any]) -> bool:
         logger.error(f"Setup {setup_id} not found")
         return False
     
+    # Check if setup should be skipped (superseded or canceled by resolver)
+    try:
+        from src.utils.setup_resolver import should_skip_execution
+        if should_skip_execution(setup_id):
+            logger.warning(f"Setup {setup_id} skipped - superseded or canceled by resolver")
+            return False
+    except Exception as e:
+        logger.warning(f"Error checking setup skip status: {e}")
+        # Continue with execution if resolver check fails
+    
     # Check if still pending
     status = str(setup.get('status', '')).lower()
     if status not in ['pending', 'pending']:
@@ -123,6 +133,16 @@ def process_cancel_job(job_data: Dict[str, Any]) -> bool:
     if setup is None or setup.empty:
         logger.error(f"Setup {setup_id} not found")
         return False
+    
+    # Check if setup should be skipped (superseded or canceled by resolver)
+    try:
+        from src.utils.setup_resolver import should_skip_execution
+        if should_skip_execution(setup_id):
+            logger.warning(f"Setup {setup_id} skipped - superseded or canceled by resolver")
+            return False
+    except Exception as e:
+        logger.warning(f"Error checking setup skip status: {e}")
+        # Continue with cancellation if resolver check fails
     
     # Check if can be cancelled (pending, executed, or triggered)
     status = str(setup.get('status', '')).lower()
