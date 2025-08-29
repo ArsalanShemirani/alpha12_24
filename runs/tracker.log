@@ -1,0 +1,8 @@
+nohup: ignoring input
+[tracker] using file: /home/ubuntu/alpha12_24/src/daemon/tracker.py
+[tracker] pandas version: 2.2.3
+[tracker] heartbeat written to runs/daemon_heartbeat.txt
+[tracker] loaded 62 completed setup IDs
+alpha12_24 tracker started.
+[tracker] received signal 15, stopping...
+[tracker] exited cleanly

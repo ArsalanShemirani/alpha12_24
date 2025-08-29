@@ -159,12 +159,25 @@ def format_setup_card(setup: pd.Series) -> str:
         confidence = setup.get('confidence', 0)
         valid_until = setup.get('valid_until', 'N/A')
         
-        # Format numbers
-        entry_str = f"${entry:.2f}" if entry else "N/A"
-        stop_str = f"${stop:.2f}" if stop else "N/A"
-        target_str = f"${target:.2f}" if target else "N/A"
-        rr_str = f"{rr:.2f}" if rr else "N/A"
-        confidence_str = f"{confidence:.1f}%" if confidence else "N/A"
+        # Format numbers with safe type conversion
+        try:
+            entry_val = float(entry) if entry and str(entry).strip() else 0
+            stop_val = float(stop) if stop and str(stop).strip() else 0
+            target_val = float(target) if target and str(target).strip() else 0
+            rr_val = float(rr) if rr and str(rr).strip() else 0
+            confidence_val = float(confidence) if confidence and str(confidence).strip() else 0
+            
+            entry_str = f"${entry_val:.2f}" if entry_val else "N/A"
+            stop_str = f"${stop_val:.2f}" if stop_val else "N/A"
+            target_str = f"${target_val:.2f}" if target_val else "N/A"
+            rr_str = f"{rr_val:.2f}" if rr_val else "N/A"
+            confidence_str = f"{confidence_val:.1f}%" if confidence_val else "N/A"
+        except (ValueError, TypeError):
+            entry_str = "N/A"
+            stop_str = "N/A"
+            target_str = "N/A"
+            rr_str = "N/A"
+            confidence_str = "N/A"
         
         # Format valid_until
         if pd.notna(valid_until) and valid_until != 'N/A':
